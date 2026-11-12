@@ -1,0 +1,21 @@
+services:
+  mega-stream-x:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mega-stream-x
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - MEGA_ENCRYPTION_KEY=${MEGA_ENCRYPTION_KEY:-mega_stream_x_master_aes256_gcm_secret_key_change_in_production!}
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

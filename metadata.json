@@ -1,0 +1,6 @@
+{
+  "name": "MEGA STREAM X",
+  "description": "Private, invitation-only personal video streaming platform with authenticated MEGA cloud storage byte-range streaming, custom cinema player, and watch progress.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
