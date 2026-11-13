@@ -107,8 +107,8 @@ export const api = {
     return fetchJson(`${BASE_URL}/videos/${id}`);
   },
 
-  async getVideoResolutions(id: string): Promise<{ videoId: string; resolutions: import('../types/index.ts').VideoResolution[] }> {
-    return fetchJson(`${BASE_URL}/videos/${id}/resolutions`);
+  async getVideoResolutions(id: string): Promise<{ videoId: string; streamVariant: 'source'; resolutions: import('../types/index.ts').VideoResolution[] }> {
+    return { videoId: id, streamVariant: 'source', resolutions: [] };
   },
 
   async getCategories(): Promise<{ categories: Category[] }> {

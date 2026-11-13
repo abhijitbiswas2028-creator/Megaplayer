@@ -5,12 +5,16 @@ export interface ParsedMegaLink {
   key?: string;
   hasKey: boolean;
   sanitizedUrl?: string;
+  embedUrl?: string;
+  fileUrl?: string;
   errorMessage?: string;
 }
 
 /**
  * Validates and extracts file identifier and decryption key from MEGA share links.
  * Handles formats:
+ * - <iframe ... src="https://mega.nz/embed/{fileId}#{key}" ...></iframe>
+ * - https://mega.nz/embed/{fileId}#{key}
  * - https://mega.nz/file/{fileId}#{key}
  * - https://mega.nz/#!{fileId}!{key} (legacy)
  * - https://mega.io/file/{fileId}#{key}
@@ -25,10 +29,16 @@ export function parseMegaUrl(rawUrl: string): ParsedMegaLink {
     };
   }
 
-  const trimmed = rawUrl.trim();
+  let trimmed = rawUrl.trim();
 
-  // Pattern 1: https://mega.nz/file/<id>#<key> or mega.io
-  const modernFileMatch = trimmed.match(/^https?:\/\/(?:mega\.nz|mega\.io)\/file\/([a-zA-Z0-9_-]+)(?:#([a-zA-Z0-9_-]+))?$/i);
+  // If passed an iframe snippet, extract the src URL
+  const iframeMatch = trimmed.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+  if (iframeMatch) {
+    trimmed = iframeMatch[1].trim();
+  }
+
+  // Pattern 1: https://mega.nz/file/<id>#<key> or /embed/<id>#<key> or mega.io
+  const modernFileMatch = trimmed.match(/^https?:\/\/(?:mega\.nz|mega\.io)\/(?:file|embed)\/([a-zA-Z0-9_-]+)(?:#([a-zA-Z0-9_-]+))?$/i);
   if (modernFileMatch) {
     const id = modernFileMatch[1];
     const key = modernFileMatch[2];
@@ -41,6 +51,8 @@ export function parseMegaUrl(rawUrl: string): ParsedMegaLink {
       key,
       hasKey,
       sanitizedUrl: `https://mega.nz/file/${id}`,
+      fileUrl: hasKey ? `https://mega.nz/file/${id}#${key}` : `https://mega.nz/file/${id}`,
+      embedUrl: hasKey ? `https://mega.nz/embed/${id}#${key}` : `https://mega.nz/embed/${id}`,
       errorMessage: hasKey ? undefined : 'Decryption key is missing in the MEGA link (hash fragment missing).',
     };
   }
@@ -59,6 +71,8 @@ export function parseMegaUrl(rawUrl: string): ParsedMegaLink {
       key,
       hasKey,
       sanitizedUrl: `https://mega.nz/file/${id}`,
+      fileUrl: hasKey ? `https://mega.nz/#!${id}!${key}` : `https://mega.nz/#!${id}`,
+      embedUrl: hasKey ? `https://mega.nz/embed/${id}#${key}` : `https://mega.nz/embed/${id}`,
       errorMessage: hasKey ? undefined : 'Decryption key is missing in legacy MEGA link.',
     };
   }

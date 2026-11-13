@@ -29,13 +29,15 @@ export function parseByteRange(rangeHeader: string | undefined, totalLength: num
   }
 
   const [rawStart, rawEnd] = parts;
+  if ((rawStart !== '' && !/^\d+$/.test(rawStart)) ||
+      (rawEnd !== '' && !/^\d+$/.test(rawEnd))) return { type: 'invalid' };
   let start: number;
   let end: number;
 
   if (rawStart === '' && rawEnd !== '') {
     // Suffix byte range: e.g. bytes=-500 (last 500 bytes)
     const suffixLength = parseInt(rawEnd, 10);
-    if (isNaN(suffixLength) || suffixLength <= 0) {
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
       return { type: 'invalid' };
     }
     start = Math.max(0, totalLength - suffixLength);
@@ -43,7 +45,7 @@ export function parseByteRange(rangeHeader: string | undefined, totalLength: num
   } else if (rawStart !== '' && rawEnd === '') {
     // Open-ended range: e.g. bytes=1000-
     start = parseInt(rawStart, 10);
-    if (isNaN(start) || start < 0) {
+    if (!Number.isSafeInteger(start) || start < 0) {
       return { type: 'invalid' };
     }
     end = totalLength - 1;
@@ -51,7 +53,7 @@ export function parseByteRange(rangeHeader: string | undefined, totalLength: num
     // Closed range: e.g. bytes=0-1023
     start = parseInt(rawStart, 10);
     end = parseInt(rawEnd, 10);
-    if (isNaN(start) || isNaN(end) || start < 0 || end < start) {
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start) {
       return { type: 'invalid' };
     }
   } else {

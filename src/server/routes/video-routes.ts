@@ -5,29 +5,39 @@ import { megaAdapter } from '../mega-adapter.ts';
 import { parseByteRange } from '../utils/range.ts';
 import { encryptSensitiveRef, decryptSensitiveRef } from '../utils/crypto.ts';
 import { parseMegaUrl } from '../utils/mega-url.ts';
-import { getResolutionFilePath, getAvailableResolutions, ensureVideoCachedAndTranscoded } from '../video-cache.ts';
 import https from 'node:https';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { queueThumbnailRepair } from '../video-cache.ts';
 
 export const videoRouter = Router();
 
-// GET /api/v1/videos/:id/resolutions: Returns supported and available resolutions
+// GET /api/v1/videos/:id/resolutions: Returns original quality status (multi-resolution disabled)
 videoRouter.get('/:id/resolutions', requireAuth, (req: Request, res: Response) => {
   const videoId = req.params.id;
-  const video = db.prepare('SELECT id FROM videos WHERE id = ? OR slug = ?').get(videoId, videoId) as any;
+  const video = db.prepare('SELECT id, status FROM videos WHERE id = ? OR slug = ?').get(videoId, videoId) as any;
   if (!video) {
     res.status(404).json({ error: 'Video not found' });
     return;
   }
-  const resolutions = getAvailableResolutions(video.id);
-  res.json({ videoId: video.id, resolutions });
+  if (video.status !== 'PUBLISHED' && req.user?.role !== 'OWNER') {
+    res.status(403).json({ error: 'This video is currently unpublished.' });
+    return;
+  }
+  res.json({ videoId: video.id, quality: 'original', resolutions: [] });
 });
+
+export function formatThumbnailUrl(url: string | null | undefined, updatedAt?: string | null): string {
+  if (!url) return '';
+  if (url.includes('?')) return url;
+  const v = updatedAt ? new Date(updatedAt).getTime() : Date.now();
+  return `${url}?v=${v}`;
+}
 
 // GET /api/v1/videos: Browse library with categories, search, sorting
 videoRouter.get('/', requireAuth, (req: Request, res: Response) => {
-  const { category, search, sort = 'newest', limit = 50, offset = 0 } = req.query;
+  const { category, search, sort = 'newest', limit = 100, offset = 0 } = req.query;
   const currentUserId = req.user!.id;
   const isOwner = req.user!.role === 'OWNER';
 
@@ -96,7 +106,9 @@ videoRouter.get('/', requireAuth, (req: Request, res: Response) => {
   }
 
   baseQuery += ' LIMIT ? OFFSET ?';
-  params.push(Number(limit) || 50, Number(offset) || 0);
+  const safeLimit = Math.min(200, Math.max(1, parseInt(String(limit), 10) || 50));
+  const safeOffset = Math.max(0, parseInt(String(offset), 10) || 0);
+  params.push(safeLimit, safeOffset);
 
   const videos = db.prepare(baseQuery).all(...params) as any[];
 
@@ -127,6 +139,7 @@ videoRouter.get('/', requireAuth, (req: Request, res: Response) => {
 
   const enrichedVideos = videos.map((v) => ({
     ...v,
+    thumbnail_url: formatThumbnailUrl(v.thumbnail_url, v.updated_at),
     is_featured: Boolean(v.is_featured),
     is_favorite: Boolean(v.is_favorite),
     is_completed: Boolean(v.is_completed),
@@ -206,6 +219,7 @@ videoRouter.get('/:id', requireAuth, (req: Request, res: Response) => {
   res.json({
     video: {
       ...video,
+      thumbnail_url: formatThumbnailUrl(video.thumbnail_url, video.updated_at),
       is_featured: Boolean(video.is_featured),
       is_favorite: Boolean(video.is_favorite),
       is_completed: Boolean(video.is_completed),
@@ -293,22 +307,10 @@ videoRouter.post('/', requireOwner, async (req: Request, res: Response) => {
       megaRawUrl = rawUrl;
       megaTotalSize = meta.size;
 
-      // Support direct link storage without requiring MEGA_ENCRYPTION_KEY
-      let cipherVal = rawUrl;
-      let ivVal = 'direct';
-      let authTagVal = 'direct';
-
-      // If MEGA_ENCRYPTION_KEY is explicitly configured in environment, encrypt; otherwise store direct link
-      if (process.env.MEGA_ENCRYPTION_KEY) {
-        try {
-          const encrypted = encryptSensitiveRef(rawUrl);
-          cipherVal = encrypted.ciphertext;
-          ivVal = encrypted.iv;
-          authTagVal = encrypted.authTag;
-        } catch (e) {
-          console.warn('Could not encrypt reference, storing direct link without key:', e);
-        }
-      }
+      // Direct unencoded link reference storage
+      const cipherVal = rawUrl;
+      const ivVal = 'direct';
+      const authTagVal = 'direct';
 
       megaSourceId = `megasrc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       db.prepare(`
@@ -340,20 +342,25 @@ videoRouter.post('/', requireOwner, async (req: Request, res: Response) => {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)+/g, '') + `-${Date.now().toString(36)}`;
 
+  const parsedMega = megaRawUrl ? parseMegaUrl(megaRawUrl) : null;
+  const finalEmbedUrl = req.body.embedUrl || parsedMega?.embedUrl || null;
+
   db.prepare(`
     INSERT INTO videos (
       id, title, description, slug, duration_seconds, thumbnail_url,
+      embed_url,
       mega_source_id, local_sample_path, status, view_count, is_featured,
       created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     videoId,
     title.trim(),
     description || '',
     slug,
     finalDuration,
-    thumbnailUrl || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=1200&q=80',
+    thumbnailUrl || '',
+    finalEmbedUrl,
     megaSourceId,
     sampleStreamUrl || null,
     status === 'UNPUBLISHED' ? 'UNPUBLISHED' : 'PUBLISHED',
@@ -386,10 +393,7 @@ videoRouter.post('/', requireOwner, async (req: Request, res: Response) => {
     now
   );
 
-  if (megaRawUrl && megaTotalSize > 0) {
-    ensureVideoCachedAndTranscoded(videoId, megaRawUrl, megaTotalSize);
-  }
-
+  queueThumbnailRepair(videoId);
   res.status(201).json({
     success: true,
     videoId,
@@ -521,8 +525,6 @@ async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
   let contentType: string = 'video/mp4';
   let isLocalFile = false;
 
-  const localDefault = path.resolve(process.cwd(), 'data/sample-cyber.mp4');
-
   if (video.mega_source_id && video.encrypted_ref) {
     if (
       video.encrypted_ref.startsWith('http://') ||
@@ -559,14 +561,8 @@ async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
     totalSize = fs.statSync(video.local_sample_path).size;
     contentType = 'video/mp4';
     isLocalFile = true;
-  } else if (fs.existsSync(localDefault)) {
-    streamUrl = localDefault;
-    totalSize = fs.statSync(localDefault).size;
-    contentType = 'video/mp4';
-    isLocalFile = true;
-  } else if (video.local_sample_path) {
+  } else if (video.local_sample_path && /^https?:\/\//.test(video.local_sample_path)) {
     streamUrl = video.local_sample_path;
-    totalSize = 50 * 1024 * 1024;
     contentType = 'video/mp4';
   }
 
@@ -575,27 +571,12 @@ async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
     return;
   }
 
-  // Check if resolution or faststart cached rendition exists for ultra-low delay
-  const requestedResolution = (req.query.resolution as string) || 'auto';
-  const cachedPath = getResolutionFilePath(video.id, requestedResolution);
-  if (cachedPath && fs.existsSync(cachedPath)) {
-    streamUrl = cachedPath;
-    totalSize = fs.statSync(cachedPath).size;
-    contentType = 'video/mp4';
-    isLocalFile = true;
-  }
-
   const rangeHeader = req.headers.range;
   const isMegaLink =
     Boolean(video.mega_source_id) ||
     streamUrl.includes('mega.nz/') ||
     streamUrl.includes('mega.io/') ||
     streamUrl.includes('mega.co.nz/');
-
-  // Start background caching job if not yet cached locally
-  if (!isLocalFile && isMegaLink && totalSize > 0) {
-    ensureVideoCachedAndTranscoded(video.id, streamUrl, totalSize);
-  }
 
   // If streaming from a remote non-MEGA HTTP sample URL, proxy range
   if (!isLocalFile && !isMegaLink && (streamUrl.startsWith('http://') || streamUrl.startsWith('https://'))) {
@@ -624,7 +605,7 @@ async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
       res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Content-Length', contentLength);
       res.setHeader('Content-Type', contentType);
-      res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+      res.setHeader('Cache-Control', 'private, no-store');
 
       if (isHead) {
         res.end();
@@ -633,36 +614,55 @@ async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
 
       const session = megaAdapter.createStream(streamUrl, range, totalSize);
 
-      req.on('close', () => {
+      res.on('close', () => {
         session.cleanup();
       });
 
       session.stream.on('error', (err: any) => {
-        console.error('MEGA stream pipeline error:', err?.message);
+        const isClientAbort = req.destroyed || res.writableEnded || res.closed || /abort/i.test(err?.message || '');
+        if (!isClientAbort) {
+          console.error('MEGA stream pipeline error:', err?.message);
+        }
         session.cleanup();
         if (!res.headersSent) {
-          res.status(502).end();
+          res.removeHeader('Content-Length');
+          res.removeHeader('Content-Range');
+          const isQuota = /509|bandwidth|quota/i.test(err?.message || '');
+          res.status(isQuota ? 509 : 502).end();
+        } else if (!res.writableEnded) {
+          res.destroy();
         }
       });
 
       session.stream.pipe(res);
 
-      // Increment view count asynchronously
-      db.prepare('UPDATE videos SET view_count = view_count + 1 WHERE id = ?').run(video.id);
+      // Increment view count asynchronously only on initial chunk
+      const isInitialChunk = !rangeHeader || rangeHeader.includes('bytes=0-');
+      if (isInitialChunk) {
+        setImmediate(() => {
+          try {
+            db.prepare('UPDATE videos SET view_count = view_count + 1 WHERE id = ?').run(video.id);
+          } catch {}
+        });
+      }
 
-      // Log stream metric
-      db.prepare(`
-        INSERT INTO stream_metrics (id, video_id, user_id, bytes_streamed, range_header, status_code, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        `strm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        video.id,
-        req.user?.id || 'anon',
-        contentLength,
-        rangeHeader || 'none',
-        206,
-        new Date().toISOString()
-      );
+      // Record stream metric asynchronously without blocking pipeline
+      setImmediate(() => {
+        try {
+          db.prepare(`
+            INSERT INTO stream_metrics (id, video_id, user_id, bytes_streamed, range_header, status_code, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            `strm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            video.id,
+            req.user?.id || 'anon',
+            contentLength,
+            rangeHeader || 'none',
+            206,
+            new Date().toISOString()
+          );
+        } catch {}
+      });
       return;
     }
 
@@ -673,6 +673,7 @@ async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
       res.setHeader('Content-Length', totalSize);
     }
     res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'private, no-store');
 
     if (isHead) {
       res.end();
@@ -680,22 +681,51 @@ async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
     }
 
     const session = megaAdapter.createStream(streamUrl, undefined, totalSize);
-    req.on('close', () => {
+    res.on('close', () => {
       session.cleanup();
     });
 
     session.stream.on('error', (err: any) => {
-      console.error('MEGA stream error:', err?.message);
+      const isClientAbort = req.destroyed || res.writableEnded || res.closed || /abort/i.test(err?.message || '');
+      if (!isClientAbort) {
+        console.error('MEGA stream error:', err?.message);
+      }
       session.cleanup();
       if (!res.headersSent) {
-        res.status(502).end();
+        res.removeHeader('Content-Length');
+        res.removeHeader('Content-Range');
+        const isQuota = /509|bandwidth|quota/i.test(err?.message || '');
+        res.status(isQuota ? 509 : 502).end();
+      } else if (!res.writableEnded) {
+        res.destroy();
       }
     });
 
     session.stream.pipe(res);
+
+    // Increment view count and metrics asynchronously
+    setImmediate(() => {
+      try {
+        db.prepare('UPDATE videos SET view_count = view_count + 1 WHERE id = ?').run(video.id);
+        db.prepare(`
+          INSERT INTO stream_metrics (id, video_id, user_id, bytes_streamed, range_header, status_code, timestamp)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          `strm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          video.id,
+          req.user?.id || 'anon',
+          totalSize,
+          'none',
+          200,
+          new Date().toISOString()
+        );
+      } catch {}
+    });
   } catch (err: any) {
     console.error('Video stream handler caught error:', err);
     if (!res.headersSent) {
+      res.removeHeader('Content-Length');
+      res.removeHeader('Content-Range');
       res.status(500).send('Internal streaming failure');
     }
   }
@@ -753,7 +783,7 @@ function proxyHttpStream(
         return;
       }
 
-      req.on('close', () => {
+      res.on('close', () => {
         upstreamReq.destroy();
       });
 
@@ -773,7 +803,7 @@ function proxyHttpStream(
     }
   });
 
-  req.on('close', () => {
+  res.on('close', () => {
     upstreamReq.destroy();
   });
 
@@ -782,7 +812,7 @@ function proxyHttpStream(
 
 // GET /api/v1/videos/:id/stream
 videoRouter.get('/:id/stream', requireAuth, (req: Request, res: Response) => {
-  handleVideoStream(req, res, false);
+  void handleVideoStream(req, res, req.method === 'HEAD');
 });
 
 // HEAD /api/v1/videos/:id/stream

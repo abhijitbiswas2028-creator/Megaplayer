@@ -89,3 +89,9 @@ See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for full deployment instructions 
 ```bash
 docker compose up -d --build
 ```
+
+### Video thumbnail repair
+
+Install `ffmpeg` and `ffprobe` on the server. On startup, the server checks local thumbnails and repairs missing, dark, or flat-color images one video at a time. New videos use the same repair queue. The extractor probes the original duration and compares frames near 10%, 50%, and 90% of the timeline, with additional timestamps if necessary. MEGA video data is streamed by byte range and is not saved to a video cache.
+
+Run `npm run thumbnails:repair` to repair the library immediately, or `npm run thumbnails:repair -- VIDEO_ID` for one video. Add `--force` to replace an otherwise acceptable preview. A successful repair versions the thumbnail URL and updates the actual duration. Failed extraction preserves the current preview and is reported; it never generates a synthetic poster. The command exits with a nonzero status if any repair fails.

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.ts';
 import { verifyPassword, hashPassword } from '../utils/crypto.ts';
-import { createSession, requireAuth } from '../auth.ts';
+import { createSession, requireAuth, invalidateSessionCache } from '../auth.ts';
 
 export const authRouter = Router();
 
@@ -63,6 +63,7 @@ authRouter.post('/login', (req: Request, res: Response) => {
 authRouter.post('/logout', (req: Request, res: Response) => {
   const token = req.cookies?.msx_session || req.sessionToken;
   if (token) {
+    invalidateSessionCache(token);
     db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
   }
   res.clearCookie('msx_session', { path: '/' });
@@ -180,6 +181,10 @@ authRouter.post('/accept-invite', (req: Request, res: Response) => {
 
 // POST /api/v1/auth/quick-demo-login: Switch seamlessly between seeded Owner and Friend for instant test & review
 authRouter.post('/quick-demo-login', (req: Request, res: Response) => {
+  if (process.env.NODE_ENV === 'production') {
+    res.status(403).json({ error: 'Demo login is disabled in production.' });
+    return;
+  }
   const { role } = req.body || {};
   const targetRole = role === 'OWNER' ? 'OWNER' : 'FRIEND';
 

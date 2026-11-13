@@ -8,7 +8,7 @@ if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true });
 }
 
-const DB_PATH = path.join(DB_DIR, 'mega_stream_x.db');
+const DB_PATH = process.env.DATABASE_PATH || path.join(DB_DIR, 'mega_stream_x.db');
 export const db = new DatabaseSync(DB_PATH);
 
 // Enable WAL mode and foreign key constraints
@@ -158,9 +158,14 @@ export function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
     CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
+    CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_video_categories_vid ON video_categories(video_id);
+    CREATE INDEX IF NOT EXISTS idx_video_categories_cat ON video_categories(category_id);
     CREATE INDEX IF NOT EXISTS idx_watch_progress_user ON watch_progress(user_id);
+    CREATE INDEX IF NOT EXISTS idx_watch_progress_updated ON watch_progress(updated_at);
     CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);
     CREATE INDEX IF NOT EXISTS idx_stream_metrics_video ON stream_metrics(video_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
   `);
 
   try {
@@ -248,57 +253,6 @@ function seedInitialData() {
     for (const c of cats) {
       insertCat.run(c.id, c.name, c.slug, c.icon, c.description, c.sort_order);
     }
-  }
-
-  // Ensure user's direct MEGA video is seeded without requiring MEGA_ENCRYPTION_KEY
-
-
-  // Ensure user's direct MEGA video is seeded without requiring MEGA_ENCRYPTION_KEY
-  const hasMegaReel = db.prepare('SELECT id FROM videos WHERE id = ?').get('vid_mega_action_reel_01');
-  if (!hasMegaReel) {
-    const megaUrl = 'https://mega.nz/file/AUUESRzT#ZqMkGEhSnP6CA7XE6AMxOfsyuIpdumTVZFW8H81iXWs';
-    const megaSourceId = 'megasrc_auuesrzt_direct';
-    
-    db.prepare(`
-      INSERT OR REPLACE INTO mega_sources (id, encrypted_ref, iv, auth_tag, file_id, file_name, file_size, mime_type, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      megaSourceId,
-      megaUrl,
-      'direct',
-      'direct',
-      'AUUESRzT',
-      '-149412052_456250946.mp4',
-      17274024,
-      'video/mp4',
-      now
-    );
-
-    db.prepare(`
-      INSERT OR REPLACE INTO videos (
-        id, title, description, slug, duration_seconds, thumbnail_url,
-        mega_source_id, local_sample_path, status, view_count, is_featured,
-        created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      'vid_mega_action_reel_01',
-      'Mega Action Reel (-149412052_456250946)',
-      'Direct progressive cloud video streaming from MEGA link without requiring MEGA_ENCRYPTION_KEY. Features 60fps high-definition playback, byte-range seeking, and cinema controls.',
-      'mega-action-reel-149412052',
-      101,
-      '/thumbnails/mega_user_video.jpg',
-      megaSourceId,
-      null,
-      'PUBLISHED',
-      1,
-      1,
-      now,
-      now
-    );
-
-    db.prepare('INSERT OR IGNORE INTO video_categories (video_id, category_id) VALUES (?, ?)').run('vid_mega_action_reel_01', 'cat_movies');
-    db.prepare('INSERT OR IGNORE INTO video_categories (video_id, category_id) VALUES (?, ?)').run('vid_mega_action_reel_01', 'cat_animation');
   }
 }
 

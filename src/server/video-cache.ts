@@ -1,142 +1,63 @@
-import fs from 'node:fs';
 import path from 'node:path';
-import { exec } from 'node:child_process';
+import { db } from './db.ts';
+import { extractThumbnail, inspectThumbnail } from './thumbnail.ts';
+import { withMegaThumbnailSource } from './thumbnail-source.ts';
+import { decryptSensitiveRef } from './utils/crypto.ts';
 import { megaAdapter } from './mega-adapter.ts';
 
-const CACHE_DIR = path.resolve(process.cwd(), 'data/cache');
-if (!fs.existsSync(CACHE_DIR)) {
-  fs.mkdirSync(CACHE_DIR, { recursive: true });
+/** Publish only a validated frame from this video's actual timeline. */
+export async function refreshVideoMetadata(videoId: string, source: string) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(videoId)) throw new Error('Invalid video ID');
+  const thumbnail = path.resolve('public/thumbnails', `${videoId}.jpg`);
+  const { duration, timestamp } = await extractThumbnail(source, thumbnail);
+  // Store the version in the URL so library, favorites and history all invalidate it.
+  const now = new Date().toISOString();
+  db.prepare('UPDATE videos SET duration_seconds = ?, thumbnail_url = ?, updated_at = ? WHERE id = ?')
+    .run(duration, `/thumbnails/${videoId}.jpg?v=${Date.now()}`, now, videoId);
+  console.log(`[thumbnail] ${videoId}: selected frame at ${timestamp.toFixed(2)}s / ${duration.toFixed(2)}s`);
+  return duration;
 }
 
-export interface ResolutionOption {
-  id: string;
-  label: string;
-  badge: string;
-  height: number;
-  available: boolean;
-}
-
-export const SUPPORTED_RESOLUTIONS: { id: string; label: string; badge: string; height: number; scaleArg?: string; crf: number }[] = [
-  { id: 'auto', label: 'Auto (Best Quality)', badge: 'FastStart', height: 0, crf: 20 },
-  { id: '1080p', label: '1080p HD', badge: '1080p', height: 1080, scaleArg: 'scale=-2:1080', crf: 19 },
-  { id: '720p', label: '720p HD', badge: '720p', height: 720, scaleArg: 'scale=-2:720', crf: 21 },
-  { id: '480p', label: '480p SD', badge: '480p', height: 480, scaleArg: 'scale=-2:480', crf: 23 },
-  { id: '360p', label: '360p Data Saver', badge: '360p', height: 360, scaleArg: 'scale=-2:360', crf: 26 },
-];
-
-/**
- * Get file path for a video and resolution tier
- */
-export function getResolutionFilePath(videoId: string, resolution: string): string | null {
-  const cleanId = videoId.replace(/[^a-zA-Z0-9_-]/g, '');
-  
-  if (resolution === 'auto' || resolution === 'source') {
-    const faststartPath = path.join(CACHE_DIR, `${cleanId}_source_faststart.mp4`);
-    if (fs.existsSync(faststartPath)) return faststartPath;
-
-    const sourcePath = path.join(CACHE_DIR, `${cleanId}_source.mp4`);
-    if (fs.existsSync(sourcePath)) return sourcePath;
-
-    return null;
+export async function repairVideoThumbnail(videoId: string, force = false) {
+  const video = db.prepare(`SELECT v.id, v.thumbnail_url, v.local_sample_path,
+    ms.encrypted_ref, ms.iv, ms.auth_tag, ms.file_size FROM videos v
+    LEFT JOIN mega_sources ms ON ms.id = v.mega_source_id WHERE v.id = ?`).get(videoId) as any;
+  if (!video) return 'missing';
+  if (!force && video.thumbnail_url) {
+    const localUrl = video.thumbnail_url.split('?')[0];
+    if (!localUrl.startsWith('/thumbnails/')) return 'external';
+    const name = localUrl.slice('/thumbnails/'.length);
+    if (name === path.basename(name) && (await inspectThumbnail(path.resolve('public/thumbnails', name))).usable) return 'healthy';
   }
-
-  const resPath = path.join(CACHE_DIR, `${cleanId}_${resolution}.mp4`);
-  if (fs.existsSync(resPath)) {
-    return resPath;
-  }
-
-  // Fallback to faststart or source if requested resolution is still processing
-  const fallbackFaststart = path.join(CACHE_DIR, `${cleanId}_source_faststart.mp4`);
-  if (fs.existsSync(fallbackFaststart)) return fallbackFaststart;
-
-  const fallbackSource = path.join(CACHE_DIR, `${cleanId}_source.mp4`);
-  if (fs.existsSync(fallbackSource)) return fallbackSource;
-
-  return null;
+  if (video.encrypted_ref) {
+    const source = video.iv === 'direct' || /^https?:/.test(video.encrypted_ref) ? video.encrypted_ref
+      : decryptSensitiveRef({ ciphertext: video.encrypted_ref, iv: video.iv, authTag: video.auth_tag });
+    const size = video.file_size || (await megaAdapter.resolveLink(source)).size;
+    if (!(size > 0)) throw new Error('Video size is unavailable');
+    await withMegaThumbnailSource(source, size, stream => refreshVideoMetadata(videoId, stream));
+  } else if (video.local_sample_path) {
+    await refreshVideoMetadata(videoId, video.local_sample_path);
+  } else throw new Error('No video source available');
+  return 'repaired';
 }
 
-/**
- * Check which resolutions are currently available on disk
- */
-export function getAvailableResolutions(videoId: string): ResolutionOption[] {
-  const cleanId = videoId.replace(/[^a-zA-Z0-9_-]/g, '');
-  
-  return SUPPORTED_RESOLUTIONS.map((res) => {
-    let available = false;
-    if (res.id === 'auto') {
-      available = fs.existsSync(path.join(CACHE_DIR, `${cleanId}_source_faststart.mp4`)) ||
-                  fs.existsSync(path.join(CACHE_DIR, `${cleanId}_source.mp4`));
-    } else {
-      available = fs.existsSync(path.join(CACHE_DIR, `${cleanId}_${res.id}.mp4`));
+const pending = new Set<string>();
+let worker: Promise<void> | undefined;
+
+/** Single worker prevents thumbnail extraction from overwhelming playback. */
+export function queueThumbnailRepair(videoId: string) {
+  pending.add(videoId);
+  if (worker) return;
+  worker = (async () => {
+    for (const id of pending) {
+      try { await repairVideoThumbnail(id); }
+      catch { console.warn(`[thumbnail] ${id}: repair unavailable; keeping existing preview`); }
+      finally { pending.delete(id); }
     }
-    return {
-      id: res.id,
-      label: res.label,
-      badge: res.badge,
-      height: res.height,
-      available,
-    };
-  });
+  })().finally(() => { worker = undefined; });
 }
 
-const activeTranscodes = new Set<string>();
-
-/**
- * Asynchronously cache and transcode a MEGA video to multi-resolution with faststart
- */
-export function ensureVideoCachedAndTranscoded(videoId: string, megaUrl: string, totalSize: number) {
-  const cleanId = videoId.replace(/[^a-zA-Z0-9_-]/g, '');
-  if (activeTranscodes.has(cleanId)) return;
-
-  const sourceFile = path.join(CACHE_DIR, `${cleanId}_source.mp4`);
-  const faststartFile = path.join(CACHE_DIR, `${cleanId}_source_faststart.mp4`);
-
-  if (fs.existsSync(faststartFile) && fs.existsSync(path.join(CACHE_DIR, `${cleanId}_720p.mp4`))) {
-    return; // Already cached and ready
-  }
-
-  activeTranscodes.add(cleanId);
-
-  // Step 1: Download source video
-  const downloadStream = megaAdapter.createStream(megaUrl, undefined, totalSize);
-  const out = fs.createWriteStream(sourceFile);
-
-  downloadStream.stream.pipe(out);
-
-  out.on('finish', () => {
-    // Step 2: Generate FastStart source
-    const faststartCmd = `ffmpeg -y -i "${sourceFile}" -c copy -movflags +faststart "${faststartFile}"`;
-    exec(faststartCmd, (err) => {
-      if (err) console.error(`Faststart generation error for ${cleanId}:`, err);
-
-      // Step 3: Generate renditions in background (360p, 480p, 720p, 1080p)
-      const renditions = [
-        { res: '360p', scale: 'scale=-2:360', crf: 26 },
-        { res: '480p', scale: 'scale=-2:480', crf: 23 },
-        { res: '720p', scale: 'scale=-2:720', crf: 21 },
-        { res: '1080p', scale: 'scale=-2:1080', crf: 19 },
-      ];
-
-      let chain = Promise.resolve();
-      for (const item of renditions) {
-        chain = chain.then(() => new Promise<void>((resolve) => {
-          const outResFile = path.join(CACHE_DIR, `${cleanId}_${item.res}.mp4`);
-          const cmd = `ffmpeg -y -i "${sourceFile}" -vf "${item.scale}" -c:v libx264 -preset ultrafast -crf ${item.crf} -c:a copy -movflags +faststart "${outResFile}"`;
-          exec(cmd, (transcodeErr) => {
-            if (transcodeErr) console.warn(`Transcode error ${cleanId} ${item.res}:`, transcodeErr.message);
-            resolve();
-          });
-        }));
-      }
-
-      chain.finally(() => {
-        activeTranscodes.delete(cleanId);
-      });
-    });
-  });
-
-  out.on('error', (err) => {
-    console.error(`Cache download error for ${cleanId}:`, err);
-    activeTranscodes.delete(cleanId);
-  });
+export function repairLibraryThumbnails() {
+  const videos = db.prepare('SELECT id FROM videos').all() as { id: string }[];
+  for (const video of videos) queueThumbnailRepair(video.id);
 }

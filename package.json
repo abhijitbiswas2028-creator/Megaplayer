@@ -4,13 +4,15 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "antigravity": "node scripts/antigravity.mjs",
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test tests/unit/core.test.ts"
+    "test": "tsx --test tests/unit/*.test.ts",
+    "thumbnails:repair": "tsx scripts/repair_thumbnails.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -35,7 +37,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",

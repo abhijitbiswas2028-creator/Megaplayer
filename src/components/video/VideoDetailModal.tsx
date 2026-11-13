@@ -1,3 +1,4 @@
+import { VideoThumbnail } from './VideoThumbnail.tsx';
 import React from 'react';
 import { Video } from '../../types/index.ts';
 import { formatDuration } from './VideoCard.tsx';
@@ -14,6 +15,7 @@ import {
   Check,
   AlertCircle,
   Sliders,
+  Sparkles,
 } from 'lucide-react';
 
 interface VideoDetailModalProps {
@@ -29,6 +31,21 @@ export const VideoDetailModal: React.FC<VideoDetailModalProps> = ({
   onPlay,
   onToggleFavorite,
 }) => {
+  // Preload stream headers on modal open for instant playback
+  React.useEffect(() => {
+    if (typeof document !== 'undefined') {
+      const existing = document.querySelector(`link[data-preload-vid="${video.id}"]`);
+      if (!existing) {
+        const link = document.createElement('link');
+        link.rel = 'preload';
+        link.as = 'fetch';
+        link.href = `/api/v1/videos/${video.id}/stream`;
+        link.setAttribute('data-preload-vid', video.id);
+        link.crossOrigin = 'anonymous';
+        document.head.appendChild(link);
+      }
+    }
+  }, [video.id]);
 
   return (
     <div
@@ -41,9 +58,9 @@ export const VideoDetailModal: React.FC<VideoDetailModalProps> = ({
       >
         {/* Hero Backdrop */}
         <div className="relative aspect-video sm:aspect-[21/9] w-full overflow-hidden bg-slate-900">
-          <img
+          <VideoThumbnail
             src={video.thumbnail_url}
-            alt={video.title}
+            title={video.title}
             className="w-full h-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-[#12151e] via-[#12151e]/40 to-transparent" />
@@ -92,6 +109,17 @@ export const VideoDetailModal: React.FC<VideoDetailModalProps> = ({
                 <Play className="w-4 h-4 fill-current" />
                 <span>Stream Cinema</span>
               </button>
+
+              {video.embed_url && (
+                <button
+                  onClick={() => onPlay({ ...video, _initialMode: 'embed' } as any)}
+                  className="px-4 py-3 rounded-2xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 font-semibold text-sm transition-all border border-cyan-500/30 flex items-center gap-2 cursor-pointer shadow-lg shadow-cyan-600/10"
+                  title="Play directly using MEGA Cloud Player (client-side decrypt)"
+                >
+                  <Sparkles className="w-4 h-4 text-cyan-400" />
+                  <span className="hidden sm:inline">MEGA Cloud Player</span>
+                </button>
+              )}
 
               <button
                 onClick={() => onToggleFavorite(video)}

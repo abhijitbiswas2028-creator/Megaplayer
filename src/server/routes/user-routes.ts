@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.ts';
 import { requireAuth } from '../auth.ts';
+import { formatThumbnailUrl } from './video-routes.ts';
 
 export const userRouter = Router();
 
@@ -11,8 +12,8 @@ userRouter.get('/history', requireAuth, (req: Request, res: Response) => {
     SELECT 
       v.id, v.title, v.description, v.slug, v.duration_seconds, v.thumbnail_url,
       v.view_count,
-      wp.position_seconds, wp.duration_seconds as tracked_duration,
-      wp.completed, wp.updated_at as last_watched_at,
+      wp.position_seconds as watch_position, wp.duration_seconds as watch_duration,
+      wp.completed as is_completed, wp.updated_at as last_watched_at,
       CASE WHEN f.id IS NOT NULL THEN 1 ELSE 0 END as is_favorite
     FROM watch_progress wp
     JOIN videos v ON wp.video_id = v.id
@@ -25,7 +26,8 @@ userRouter.get('/history', requireAuth, (req: Request, res: Response) => {
   res.json({
     history: history.map((h) => ({
       ...h,
-      completed: Boolean(h.completed),
+      thumbnail_url: formatThumbnailUrl(h.thumbnail_url, h.last_watched_at),
+      is_completed: Boolean(h.is_completed),
       is_favorite: Boolean(h.is_favorite),
     })),
   });
@@ -38,8 +40,8 @@ userRouter.get('/continue-watching', requireAuth, (req: Request, res: Response) 
     SELECT 
       v.id, v.title, v.description, v.slug, v.duration_seconds, v.thumbnail_url,
       v.view_count,
-      wp.position_seconds, wp.duration_seconds as tracked_duration,
-      wp.completed, wp.updated_at as last_watched_at,
+      wp.position_seconds as watch_position, wp.duration_seconds as watch_duration,
+      wp.completed as is_completed, wp.updated_at as last_watched_at,
       CASE WHEN f.id IS NOT NULL THEN 1 ELSE 0 END as is_favorite
     FROM watch_progress wp
     JOIN videos v ON wp.video_id = v.id
@@ -52,7 +54,8 @@ userRouter.get('/continue-watching', requireAuth, (req: Request, res: Response) 
   res.json({
     continueWatching: inProgress.map((v) => ({
       ...v,
-      completed: false,
+      thumbnail_url: formatThumbnailUrl(v.thumbnail_url, v.last_watched_at),
+      is_completed: false,
       is_favorite: Boolean(v.is_favorite),
     })),
   });
@@ -64,10 +67,21 @@ userRouter.put('/progress/:videoId', requireAuth, (req: Request, res: Response) 
   const videoId = req.params.videoId;
   const { positionSeconds, durationSeconds } = req.body || {};
 
-  const pos = Number(positionSeconds) || 0;
-  const dur = Number(durationSeconds) || 0;
+  const requestedPosition = Number(positionSeconds);
+  const dur = Number(durationSeconds);
+  if (!Number.isFinite(requestedPosition) || requestedPosition < 0 || !Number.isFinite(dur) || dur <= 0) {
+    res.status(400).json({ error: 'Progress requires a finite position and positive duration.' });
+    return;
+  }
+  const video = db.prepare('SELECT status FROM videos WHERE id = ?').get(videoId) as any;
+  if (!video || (video.status !== 'PUBLISHED' && req.user!.role !== 'OWNER')) {
+    res.status(404).json({ error: 'Video not found.' });
+    return;
+  }
+  const pos = Math.min(requestedPosition, dur);
   const isCompleted = dur > 0 && pos / dur >= 0.92 ? 1 : 0;
   const now = new Date().toISOString();
+  db.prepare('UPDATE videos SET duration_seconds = ? WHERE id = ?').run(dur, videoId);
 
   const existing = db.prepare('SELECT id FROM watch_progress WHERE user_id = ? AND video_id = ?').get(userId, videoId) as any;
 
@@ -108,6 +122,7 @@ userRouter.get('/favorites', requireAuth, (req: Request, res: Response) => {
   res.json({
     favorites: favorites.map((fav) => ({
       ...fav,
+      thumbnail_url: formatThumbnailUrl(fav.thumbnail_url, fav.favorited_at),
       is_favorite: true,
       is_completed: Boolean(fav.is_completed),
     })),

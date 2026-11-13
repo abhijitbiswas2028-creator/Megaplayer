@@ -1,12 +1,13 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react';
 import { User, Video, Category, AppView } from './types/index.ts';
 import { api } from './lib/api.ts';
 import { Navbar } from './components/layout/Navbar.tsx';
 import { Sidebar } from './components/layout/Sidebar.tsx';
+import { VideoThumbnail } from './components/video/VideoThumbnail.tsx';
 import { VideoCard, formatDuration } from './components/video/VideoCard.tsx';
 import { VideoPlayer } from './components/player/VideoPlayer.tsx';
 import { VideoDetailModal } from './components/video/VideoDetailModal.tsx';
-import { AdminDashboard } from './components/admin/AdminDashboard.tsx';
+const AdminDashboard = lazy(() => import('./components/admin/AdminDashboard.tsx').then(module => ({ default: module.AdminDashboard })));
 import { AuthModal } from './components/auth/AuthModal.tsx';
 import {
   Play,
@@ -35,8 +36,17 @@ export default function App() {
   const [sessionToken, setSessionToken] = useState<string | undefined>(undefined);
   const [currentView, setCurrentView] = useState<AppView>('home');
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [sortBy, setSortBy] = useState<string>('newest');
+
+  // Debounce search input to avoid hitting backend on every keystroke
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // Library state
   const [videos, setVideos] = useState<Video[]>([]);
@@ -51,27 +61,58 @@ export default function App() {
   const [selectedDetailVideo, setSelectedDetailVideo] = useState<Video | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
 
-  // Fetch library data
+  const handleStartPlayback = (video: Video) => {
+    setActivePlaybackVideo(video);
+  };
+
+  const libraryRequestRef = useRef(0);
+  const isInitialLoadRef = useRef(true);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+
+  // Fetch full library data (categories, personalized lists, videos)
   const refreshLibraryData = async () => {
+    const requestId = ++libraryRequestRef.current;
     setLoadingVideos(true);
+    setLibraryError(null);
     try {
       const [vRes, cRes, cwRes, fRes, hRes] = await Promise.all([
-        api.getVideos({ category: selectedCategory !== 'all' ? selectedCategory : undefined, search: searchQuery || undefined, sort: sortBy }),
+        api.getVideos({ category: selectedCategory !== 'all' ? selectedCategory : undefined, search: debouncedSearchQuery || searchQuery || undefined, sort: sortBy }),
         api.getCategories(),
         api.getContinueWatching(),
         api.getFavorites(),
         api.getWatchHistory(),
       ]);
 
+      if (requestId !== libraryRequestRef.current) return;
       setVideos(vRes.videos);
       setCategories(cRes.categories);
       setContinueWatchingList(cwRes.continueWatching);
       setFavoritesList(fRes.favorites);
       setHistoryList(hRes.history);
     } catch (err) {
-      console.error('Failed to load library:', err);
+      if (requestId === libraryRequestRef.current) setLibraryError(err instanceof Error ? err.message : 'Could not load videos.');
     } finally {
-      setLoadingVideos(false);
+      if (requestId === libraryRequestRef.current) setLoadingVideos(false);
+    }
+  };
+
+  // Efficient targeted refresh for filter, search, and sort changes (avoids redundant multi-endpoint calls)
+  const refreshVideosOnly = async () => {
+    const requestId = ++libraryRequestRef.current;
+    setLoadingVideos(true);
+    setLibraryError(null);
+    try {
+      const vRes = await api.getVideos({
+        category: selectedCategory !== 'all' ? selectedCategory : undefined,
+        search: debouncedSearchQuery || undefined,
+        sort: sortBy,
+      });
+      if (requestId !== libraryRequestRef.current) return;
+      setVideos(vRes.videos);
+    } catch (err) {
+      if (requestId === libraryRequestRef.current) setLibraryError(err instanceof Error ? err.message : 'Could not load videos.');
+    } finally {
+      if (requestId === libraryRequestRef.current) setLoadingVideos(false);
     }
   };
 
@@ -82,6 +123,11 @@ export default function App() {
         const meRes = await api.getMe();
         let user = meRes.user;
         let token = meRes.token;
+        if (!user && !import.meta.env.DEV) {
+          setAuthModalOpen(true);
+          setLoadingVideos(false);
+          return;
+        }
         if (!user) {
           const demoRes = await api.quickDemoLogin('OWNER');
           user = demoRes.user;
@@ -100,9 +146,13 @@ export default function App() {
 
   useEffect(() => {
     if (currentUser) {
-      refreshLibraryData();
+      if (isInitialLoadRef.current) {
+        isInitialLoadRef.current = false;
+        return;
+      }
+      refreshVideosOnly();
     }
-  }, [selectedCategory, searchQuery, sortBy]);
+  }, [selectedCategory, debouncedSearchQuery, sortBy]);
 
   // Sign out
   const handleLogout = async () => {
@@ -179,7 +229,7 @@ export default function App() {
           setCurrentView(view);
           if (view === 'movies' || view === 'series' || view === 'tutorials') {
             setSelectedCategory(view);
-          } else if (view === 'explore') {
+          } else if (view === 'explore' || view === 'home') {
             setSelectedCategory('all');
           }
         }}
@@ -208,8 +258,12 @@ export default function App() {
 
         {/* Main Content Area */}
         <main className="flex-1 overflow-y-auto pb-16 min-w-0">
+          {libraryError && <div role="alert" className="m-6 rounded-xl border border-rose-400/20 bg-rose-400/5 p-4 text-sm text-rose-200">
+            {libraryError} <button onClick={refreshLibraryData} className="ml-3 underline cursor-pointer">Try again</button>
+          </div>}
           {/* VIEW: ADMIN SUITE */}
           {currentView.startsWith('admin-') && currentUser?.role === 'OWNER' && (
+            <Suspense fallback={<div role="status" className="p-8 text-sm text-slate-400">Loading dashboard…</div>}>
             <AdminDashboard
               initialTab={
                 currentView === 'admin-add-video'
@@ -224,69 +278,19 @@ export default function App() {
               }
               categories={categories}
               onVideoCreated={refreshLibraryData}
-              onPreviewVideo={(video) => setActivePlaybackVideo(video)}
+              onPreviewVideo={(video) => handleStartPlayback(video)}
             />
+            </Suspense>
           )}
 
           {/* VIEW: HOME VIEW */}
           {currentView === 'home' && (
             <div className="space-y-10">
-              {/* Cinematic Hero Featured Video */}
-              {heroVideo && (
-                <div className="relative w-full aspect-[16/9] sm:aspect-[21/9] max-h-[520px] overflow-hidden bg-slate-950">
-                  <img
-                    src={heroVideo.thumbnail_url}
-                    alt={heroVideo.title}
-                    className="w-full h-full object-cover scale-105 filter brightness-90"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-[#090b10] via-[#090b10]/40 to-transparent" />
-                  <div className="absolute inset-0 bg-gradient-to-r from-[#090b10] via-[#090b10]/60 to-transparent w-full sm:w-2/3" />
-
-                  {/* Hero Information */}
-                  <div className="absolute bottom-8 left-4 sm:left-10 right-4 sm:right-10 max-w-2xl space-y-3 sm:space-y-4">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-lg bg-violet-600 text-white shadow-md">
-                        FEATURED STREAM
-                      </span>
-                      {heroVideo.categories && heroVideo.categories[0] && (
-                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-black/60 text-slate-300 border border-white/10 backdrop-blur-md">
-                          {heroVideo.categories[0].name}
-                        </span>
-                      )}
-                      <span className="text-[11px] font-medium text-slate-400 flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5 text-cyan-400" />
-                        {formatDuration(heroVideo.duration_seconds)}
-                      </span>
-                    </div>
-
-                    <h1 className="text-2xl sm:text-4xl lg:text-5xl font-black text-white tracking-tight drop-shadow-xl leading-tight">
-                      {heroVideo.title}
-                    </h1>
-
-                    <p className="text-xs sm:text-sm text-slate-300 line-clamp-2 sm:line-clamp-3 leading-relaxed drop-shadow">
-                      {heroVideo.description}
-                    </p>
-
-                    <div className="flex items-center gap-3 pt-2">
-                      <button
-                        onClick={() => setActivePlaybackVideo(heroVideo)}
-                        className="px-6 py-3 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-bold text-xs sm:text-sm transition-all shadow-xl shadow-violet-600/30 hover:scale-[1.02] flex items-center gap-2 cursor-pointer"
-                      >
-                        <Play className="w-4 h-4 fill-current" />
-                        <span>Stream Now</span>
-                      </button>
-
-                      <button
-                        onClick={() => setSelectedDetailVideo(heroVideo)}
-                        className="px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/20 text-white font-semibold text-xs sm:text-sm backdrop-blur-md transition-all flex items-center gap-2 cursor-pointer border border-white/10"
-                      >
-                        <Info className="w-4 h-4" />
-                        <span>Details</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
+              <header className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10 space-y-2">
+                <p className="text-xs font-semibold text-violet-300 tracking-widest uppercase">Your private collection</p>
+                <h1 className="text-3xl font-semibold tracking-tight">Video library</h1>
+                <p className="text-sm text-slate-400">Find something to watch. Pick up where you left off.</p>
+              </header>
 
               {/* Continue Watching Row (if user has items in progress) */}
               {continueWatchingList.length > 0 && (
@@ -308,7 +312,7 @@ export default function App() {
                       <VideoCard
                         key={video.id}
                         video={video}
-                        onPlay={(v) => setActivePlaybackVideo(v)}
+                        onPlay={(v) => handleStartPlayback(v)}
                         onViewDetails={(v) => setSelectedDetailVideo(v)}
                         onToggleFavorite={handleToggleFavorite}
                       />
@@ -319,37 +323,11 @@ export default function App() {
 
               {/* Category Filter Pills */}
               <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-4">
-                <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-                  <button
-                    onClick={() => setSelectedCategory('all')}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
-                      selectedCategory === 'all'
-                        ? 'bg-violet-600 text-white shadow-md shadow-violet-600/30'
-                        : 'bg-[#12151e] text-slate-400 hover:text-white border border-white/5'
-                    }`}
-                  >
-                    All Channels
-                  </button>
-                  {categories.map((c) => (
-                    <button
-                      key={c.id}
-                      onClick={() => setSelectedCategory(c.slug)}
-                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
-                        selectedCategory === c.slug
-                          ? 'bg-violet-600 text-white shadow-md shadow-violet-600/30'
-                          : 'bg-[#12151e] text-slate-400 hover:text-white border border-white/5'
-                      }`}
-                    >
-                      {c.name}
-                    </button>
-                  ))}
-                </div>
-
                 {/* Video Grid */}
                 <div className="space-y-4 pt-2">
                   <div className="flex items-center justify-between">
                     <h2 className="text-base sm:text-lg font-extrabold text-white flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-cyan-400" /> Authorized Library
+                      <Sparkles className="w-4 h-4 text-cyan-400" /> All videos
                     </h2>
                     <span className="text-xs text-slate-400">{videos.length} videos</span>
                   </div>
@@ -357,7 +335,7 @@ export default function App() {
                   {loadingVideos ? (
                     <div className="py-20 text-center">
                       <Loader2 className="w-8 h-8 text-violet-400 animate-spin mx-auto" />
-                      <p className="text-xs text-slate-400 mt-2">Loading authorized streams...</p>
+                      <p className="text-xs text-slate-400 mt-2">Loading videos…</p>
                     </div>
                   ) : videos.length === 0 ? (
                     <div className="p-12 text-center rounded-3xl bg-[#12151e] border border-white/5 text-slate-400 text-xs">
@@ -369,7 +347,7 @@ export default function App() {
                         <VideoCard
                           key={video.id}
                           video={video}
-                          onPlay={(v) => setActivePlaybackVideo(v)}
+                          onPlay={(v) => handleStartPlayback(v)}
                           onViewDetails={(v) => setSelectedDetailVideo(v)}
                           onToggleFavorite={handleToggleFavorite}
                         />
@@ -403,7 +381,7 @@ export default function App() {
                       ? 'Resume playback exactly where you left off'
                       : currentView === 'history'
                       ? 'Complete timeline of streamed content'
-                      : 'Browse the private collection with instant byte-range streaming'}
+                      : 'Browse your video collection'}
                   </p>
                 </div>
 
@@ -460,7 +438,7 @@ export default function App() {
                         <VideoCard
                           key={video.id}
                           video={video}
-                          onPlay={(v) => setActivePlaybackVideo(v)}
+                          onPlay={(v) => handleStartPlayback(v)}
                           onViewDetails={(v) => setSelectedDetailVideo(v)}
                           onToggleFavorite={handleToggleFavorite}
                         />
@@ -564,8 +542,10 @@ export default function App() {
       {/* VIDEO PLAYER CINEMA OVERLAY */}
       {activePlaybackVideo && (
         <VideoPlayer
+          key={activePlaybackVideo.id}
           video={activePlaybackVideo}
           sessionToken={sessionToken}
+          initialMode={(activePlaybackVideo as any)._initialMode}
           onClose={() => {
             setActivePlaybackVideo(null);
             refreshLibraryData();
@@ -583,7 +563,7 @@ export default function App() {
           onClose={() => setSelectedDetailVideo(null)}
           onPlay={(v) => {
             setSelectedDetailVideo(null);
-            setActivePlaybackVideo(v);
+            handleStartPlayback(v);
           }}
           onToggleFavorite={handleToggleFavorite}
         />

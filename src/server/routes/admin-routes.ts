@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.ts';
-import { requireOwner } from '../auth.ts';
+import { requireOwner, invalidateSessionCache } from '../auth.ts';
 import { generateSecureToken } from '../utils/crypto.ts';
 
 export const adminRouter = Router();
@@ -95,6 +95,7 @@ adminRouter.patch('/users/:id/status', (req: Request, res: Response) => {
   // If disabled, revoke active sessions immediately
   if (status === 'DISABLED') {
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetUserId);
+    invalidateSessionCache();
   }
 
   // Audit log

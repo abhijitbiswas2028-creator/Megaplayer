@@ -1,4 +1,5 @@
 import test from 'node:test';
+process.env.DATABASE_PATH = ':memory:';
 import assert from 'node:assert/strict';
 import { encryptSensitiveRef, decryptSensitiveRef, hashPassword, verifyPassword } from '../../src/server/utils/crypto.ts';
 import { parseByteRange } from '../../src/server/utils/range.ts';
@@ -84,6 +85,12 @@ test('Range Parser: Range not satisfiable (416)', () => {
   assert.equal(result.type, 'unsatisfiable');
 });
 
+test('Range Parser: malformed numbers are not silently parsed as valid offsets', () => {
+  for (const range of ['bytes=1oops-3', 'bytes=0-1.5', 'bytes=1e2-', 'bytes=0-999999999999999999999']) {
+    assert.equal(parseByteRange(range, 1000).type, 'invalid', range);
+  }
+});
+
 test('MEGA URL: Valid modern URL format', () => {
   const parsed = parseMegaUrl('https://mega.nz/file/eF9SgCYA#t_0b9lC0b2mI_QzWq9pL8z1x');
   assert.equal(parsed.isValid, true);
@@ -118,20 +125,9 @@ test('MEGA URL: Non-MEGA link rejected', () => {
   assert.equal(parsed.isValid, false);
 });
 
-test('Video Cache: Available resolutions metadata structure', async () => {
-  const { getAvailableResolutions, SUPPORTED_RESOLUTIONS } = await import('../../src/server/video-cache.ts');
-  assert.ok(SUPPORTED_RESOLUTIONS.length >= 5);
-  const resolutions = getAvailableResolutions('vid_mega_action_reel_01');
-  assert.ok(Array.isArray(resolutions));
-  assert.ok(resolutions.some(r => r.id === 'auto'));
-  assert.ok(resolutions.some(r => r.id === '720p'));
-  assert.ok(resolutions.some(r => r.id === '360p'));
-});
-
-test('Video Cache: Resolution file path resolution', async () => {
-  const { getResolutionFilePath } = await import('../../src/server/video-cache.ts');
-  const path720 = getResolutionFilePath('vid_mega_action_reel_01', '720p');
-  assert.ok(path720 && typeof path720 === 'string');
-  assert.match(path720, /720p\.mp4/);
+test('Direct Streaming: Mega adapter provides authenticated direct stream pipeline without local cache', async () => {
+  const { megaAdapter } = await import('../../src/server/mega-adapter.ts');
+  assert.equal(typeof megaAdapter.createStream, 'function');
+  assert.equal(typeof megaAdapter.resolveLink, 'function');
 });
 

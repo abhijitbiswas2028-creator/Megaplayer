@@ -1,0 +1,10 @@
+node_modules/
+dist/
+data/cache/
+data/*.db-shm
+data/*.db-wal
+.env
+.DS_Store
+*.log
+*.part
+*.part.*

@@ -1,8 +1,9 @@
-import { File as MegaFile } from 'megajs';
+import { API, File as MegaFile, decrypt as megaDecrypt } from 'megajs';
 import { parseMegaUrl } from './utils/mega-url.ts';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, PassThrough, Transform } from 'node:stream';
+import { createResilientStream } from './resilient-stream.ts';
 
 export interface MegaFileMetadata {
   id: string;
@@ -17,6 +18,13 @@ export interface StreamSession {
   stream: NodeJS.ReadableStream;
   cleanup: () => void;
   contentLength: number;
+}
+
+export interface StorageNodeInfo {
+  storageUrl: string;
+  key: any;
+  size: number;
+  expires: number;
 }
 
 const VIDEO_EXTENSIONS: Record<string, string> = {
@@ -38,6 +46,52 @@ export function getMimeTypeFromFilename(filename: string): { mimeType: string; i
   };
 }
 
+// Persistent shared API instance with HTTP keepalive for fast connection reuse
+const sharedMegaApi = new API(true);
+
+// In-memory cache for resolved MEGA storage node URLs to eliminate repeated metadata API calls on seek
+const storageUrlCache = new Map<string, StorageNodeInfo>();
+const inFlightStorageRequests = new Map<string, Promise<StorageNodeInfo>>();
+
+export async function getMegaStorageInfo(validUrl: string): Promise<StorageNodeInfo> {
+  const cached = storageUrlCache.get(validUrl);
+  if (cached && Date.now() < cached.expires) {
+    return cached;
+  }
+
+  const inFlight = inFlightStorageRequests.get(validUrl);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const promise = (async () => {
+    try {
+      const file = MegaFile.fromURL(validUrl, { api: sharedMegaApi });
+      return await new Promise<StorageNodeInfo>((resolve, reject) => {
+        sharedMegaApi.request({ a: 'g', g: 1, ssl: 2, p: file.downloadId } as any, (err: any, response: any) => {
+          if (err) return reject(err);
+          if (typeof response?.g !== 'string' || !response.g.startsWith('http')) {
+            return reject(new Error('MEGA servers returned invalid storage node response'));
+          }
+          const info: StorageNodeInfo = {
+            storageUrl: response.g,
+            key: file.key,
+            size: typeof response.s === 'number' ? response.s : 0,
+            expires: Date.now() + 30 * 60 * 1000, // 30 minutes
+          };
+          storageUrlCache.set(validUrl, info);
+          resolve(info);
+        });
+      });
+    } finally {
+      inFlightStorageRequests.delete(validUrl);
+    }
+  })();
+
+  inFlightStorageRequests.set(validUrl, promise);
+  return promise;
+}
+
 export class MegaAdapter {
   /**
    * Validate a MEGA share link and extract its remote attributes without full download
@@ -49,7 +103,8 @@ export class MegaAdapter {
     }
 
     // Connect to MEGA API via megajs File.fromURL
-    const megaFile = MegaFile.fromURL(rawUrl);
+    const validUrl = parsed.fileUrl || rawUrl.replace('/embed/', '/file/');
+    const megaFile = MegaFile.fromURL(validUrl);
     
     // Set a 15-second timeout for attribute loading
     const loadPromise = new Promise<void>((resolve, reject) => {
@@ -59,11 +114,13 @@ export class MegaAdapter {
       });
     });
 
+    let timeout: ReturnType<typeof setTimeout>;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('MEGA metadata request timed out after 15s')), 15000);
+      timeout = setTimeout(() => reject(new Error('MEGA metadata request timed out after 15s')), 15000);
     });
 
-    await Promise.race([loadPromise, timeoutPromise]);
+    try { await Promise.race([loadPromise, timeoutPromise]); }
+    finally { clearTimeout(timeout!); }
 
     const name = megaFile.name || `mega-file-${parsed.id}.mp4`;
     const size = typeof megaFile.size === 'number' ? megaFile.size : 0;
@@ -91,7 +148,11 @@ export class MegaAdapter {
     if (fs.existsSync(rawUrlOrPath)) {
       const start = range?.start ?? 0;
       const end = range?.end ?? (fs.statSync(rawUrlOrPath).size - 1);
-      const fileStream = fs.createReadStream(rawUrlOrPath, { start, end });
+      const fileStream = fs.createReadStream(rawUrlOrPath, {
+        start,
+        end,
+        highWaterMark: 512 * 1024, // 512KB chunks for butter-smooth streaming
+      });
       return {
         stream: fileStream,
         cleanup: () => {
@@ -102,38 +163,113 @@ export class MegaAdapter {
     }
 
     // MEGA remote stream
-    const megaFile = MegaFile.fromURL(rawUrlOrPath);
+    const validUrl = rawUrlOrPath.replace('/embed/', '/file/');
     const start = range?.start ?? 0;
     const end = range?.end ?? (totalSize ? totalSize - 1 : undefined);
 
-    const downloadStream = megaFile.download({
-      start,
-      end,
-      maxConnections: 2,
-    });
+    return createResilientStream((offset, lastByte) => {
+      const outStream = new PassThrough();
+      const controller = new AbortController();
+      let activeBody: Readable | undefined;
+      let decStream: any;
+      let skipStream: Transform | undefined;
 
-    let cleanedUp = false;
-    const cleanup = () => {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      try {
-        if ('destroy' in downloadStream && typeof (downloadStream as any).destroy === 'function') {
-          (downloadStream as any).destroy();
-        } else if ('end' in downloadStream && typeof (downloadStream as any).end === 'function') {
-          (downloadStream as any).end();
+      const cleanup = () => {
+        if (!controller.signal.aborted) {
+          controller.abort();
         }
-      } catch {
-        // Safe ignore
-      }
-    };
+        if (activeBody) {
+          activeBody.destroy();
+          activeBody = undefined;
+        }
+        if (decStream) {
+          decStream.destroy();
+          decStream = undefined;
+        }
+        if (skipStream) {
+          skipStream.destroy();
+          skipStream = undefined;
+        }
+        if (!outStream.destroyed) {
+          outStream.destroy();
+        }
+      };
 
-    const calculatedLength = end !== undefined ? end - start + 1 : 0;
+      (async () => {
+        try {
+          const { storageUrl, key } = await getMegaStorageInfo(validUrl);
+          if (controller.signal.aborted) return;
 
-    return {
-      stream: downloadStream as unknown as NodeJS.ReadableStream,
-      cleanup,
-      contentLength: calculatedLength,
-    };
+          const apiStart = offset - (offset % 16);
+          const skip = offset - apiStart;
+          const rangeEnd = lastByte !== undefined && lastByte >= 0 ? lastByte : undefined;
+          const fetchUrl = rangeEnd !== undefined
+            ? `${storageUrl}/${apiStart}-${rangeEnd}`
+            : `${storageUrl}/${apiStart}`;
+
+          const res = await fetch(fetchUrl, { signal: controller.signal });
+          if (!res.ok) {
+            if (res.status === 401 || res.status === 403 || res.status === 404) {
+              storageUrlCache.delete(validUrl);
+            }
+            throw new Error(`MEGA storage node returned HTTP ${res.status}`);
+          }
+          if (!res.body) {
+            throw new Error('MEGA storage node returned empty response body');
+          }
+
+          activeBody = Readable.fromWeb(res.body as any);
+          decStream = megaDecrypt(key, { start: apiStart, disableVerification: true });
+
+          activeBody.on('error', (err: any) => {
+            if (!controller.signal.aborted && !outStream.destroyed) {
+              outStream.destroy(err);
+            }
+          });
+          decStream.on('error', (err: any) => {
+            if (!controller.signal.aborted && !outStream.destroyed) {
+              outStream.destroy(err);
+            }
+          });
+
+          if (skip > 0) {
+            let skipped = 0;
+            skipStream = new Transform({
+              transform(chunk, _enc, callback) {
+                if (skipped < skip) {
+                  const toSkip = Math.min(chunk.length, skip - skipped);
+                  skipped += toSkip;
+                  if (chunk.length > toSkip) {
+                    callback(null, chunk.subarray(toSkip));
+                  } else {
+                    callback();
+                  }
+                } else {
+                  callback(null, chunk);
+                }
+              },
+            });
+            skipStream.on('error', (err: any) => {
+              if (!controller.signal.aborted && !outStream.destroyed) {
+                outStream.destroy(err);
+              }
+            });
+            activeBody.pipe(decStream).pipe(skipStream).pipe(outStream);
+          } else {
+            activeBody.pipe(decStream).pipe(outStream);
+          }
+        } catch (err: any) {
+          if (!controller.signal.aborted && !outStream.destroyed) {
+            outStream.destroy(err);
+          }
+        }
+      })();
+
+      return {
+        stream: outStream,
+        cleanup,
+      };
+    }, start, end);
   }
 }
 
