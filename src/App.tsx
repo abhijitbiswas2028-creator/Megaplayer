@@ -66,7 +66,7 @@ export default function App() {
   };
 
   const libraryRequestRef = useRef(0);
-  const isInitialLoadRef = useRef(true);
+  const initialCatalogLoadedRef = useRef(false);
   const [libraryError, setLibraryError] = useState<string | null>(null);
 
   // Fetch full library data (categories, personalized lists, videos)
@@ -136,6 +136,7 @@ export default function App() {
         setCurrentUser(user);
         setSessionToken(token);
         await refreshLibraryData();
+        initialCatalogLoadedRef.current = true;
       } catch (err) {
         console.warn('Init auth fallback:', err);
         setLoadingVideos(false);
@@ -145,11 +146,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (currentUser) {
-      if (isInitialLoadRef.current) {
-        isInitialLoadRef.current = false;
-        return;
-      }
+    if (currentUser && initialCatalogLoadedRef.current) {
       refreshVideosOnly();
     }
   }, [selectedCategory, debouncedSearchQuery, sortBy]);

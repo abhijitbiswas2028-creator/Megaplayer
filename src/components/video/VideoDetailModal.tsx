@@ -2,7 +2,6 @@ import { VideoThumbnail } from './VideoThumbnail.tsx';
 import React from 'react';
 import { Video } from '../../types/index.ts';
 import { formatDuration } from './VideoCard.tsx';
-import { resolveBackendUrl } from '../../lib/api.ts';
 import {
   X,
   Play,
@@ -32,22 +31,6 @@ export const VideoDetailModal: React.FC<VideoDetailModalProps> = ({
   onPlay,
   onToggleFavorite,
 }) => {
-  // Preload stream headers on modal open for instant playback
-  React.useEffect(() => {
-    if (typeof document !== 'undefined') {
-      const existing = document.querySelector(`link[data-preload-vid="${video.id}"]`);
-      if (!existing) {
-        const link = document.createElement('link');
-        link.rel = 'preload';
-        link.as = 'fetch';
-        link.href = resolveBackendUrl(`/api/v1/videos/${video.id}/stream`);
-        link.setAttribute('data-preload-vid', video.id);
-        link.crossOrigin = 'anonymous';
-        document.head.appendChild(link);
-      }
-    }
-  }, [video.id]);
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 sm:p-6 overflow-y-auto"
