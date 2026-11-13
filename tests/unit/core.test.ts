@@ -1,5 +1,4 @@
 import test from 'node:test';
-process.env.DATABASE_PATH = ':memory:';
 import assert from 'node:assert/strict';
 import { encryptSensitiveRef, decryptSensitiveRef, hashPassword, verifyPassword } from '../../src/server/utils/crypto.ts';
 import { parseByteRange } from '../../src/server/utils/range.ts';

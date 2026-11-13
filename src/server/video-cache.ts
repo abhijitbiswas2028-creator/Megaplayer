@@ -1,6 +1,5 @@
 import path from 'node:path';
-import { db } from './db.ts';
-import { mongoEnabled, collection, streamVideo, saveThumbnail } from './mongo/store.ts';
+import { collection, streamVideo, saveThumbnail } from './mongo/store.ts';
 import { extractThumbnail, inspectThumbnail } from './thumbnail.ts';
 import { withMegaThumbnailSource } from './thumbnail-source.ts';
 import { decryptSensitiveRef } from './utils/crypto.ts';
@@ -11,23 +10,18 @@ export async function refreshVideoMetadata(videoId: string, source: string) {
   if (!/^[a-zA-Z0-9_-]+$/.test(videoId)) throw new Error('Invalid video ID');
   const thumbnail = path.resolve('public/thumbnails', `${videoId}.jpg`);
   const { duration, timestamp } = await extractThumbnail(source, thumbnail);
-  // Store the version in the URL so library, favorites and history all invalidate it.
   const now = new Date().toISOString();
-  if (mongoEnabled) {
-    const thumbnail_url = await saveThumbnail(thumbnail);
-    await collection('videos').updateOne({id:videoId}, {$set:{duration_seconds:duration,thumbnail_url,updated_at:now}});
-  } else db.prepare('UPDATE videos SET duration_seconds = ?, thumbnail_url = ?, updated_at = ? WHERE id = ?')
-    .run(duration, `/thumbnails/${videoId}.jpg?v=${Date.now()}`, now, videoId);
+  const thumbnail_url = await saveThumbnail(thumbnail);
+  await collection('videos').updateOne({ id: videoId }, { $set: { duration_seconds: duration, thumbnail_url, updated_at: now } });
   console.log(`[thumbnail] ${videoId}: selected frame at ${timestamp.toFixed(2)}s / ${duration.toFixed(2)}s`);
   return duration;
 }
 
 export async function repairVideoThumbnail(videoId: string, force = false) {
-  const video = mongoEnabled ? await streamVideo(videoId) : db.prepare(`SELECT v.id, v.thumbnail_url, v.local_sample_path,
-    ms.encrypted_ref, ms.iv, ms.auth_tag, ms.file_size FROM videos v
-    LEFT JOIN mega_sources ms ON ms.id = v.mega_source_id WHERE v.id = ?`).get(videoId) as any;
+  const video = await streamVideo(videoId);
   if (!video) return 'missing';
   if (!force && video.thumbnail_url) {
+    if (video.thumbnail_url.startsWith('/media/thumbnails/')) return 'healthy';
     const localUrl = video.thumbnail_url.split('?')[0];
     if (!localUrl.startsWith('/thumbnails/')) return 'external';
     const name = localUrl.slice('/thumbnails/'.length);
@@ -62,6 +56,6 @@ export function queueThumbnailRepair(videoId: string) {
 }
 
 export async function repairLibraryThumbnails() {
-  const videos = mongoEnabled ? await collection('videos').find({}, {projection:{id:1}}).toArray() : db.prepare('SELECT id FROM videos').all() as { id: string }[];
+  const videos = await collection('videos').find({}, { projection: { id: 1 } }).toArray();
   for (const video of videos) queueThumbnailRepair(video.id);
 }

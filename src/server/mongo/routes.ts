@@ -36,7 +36,9 @@ mongoRouter.get('/videos',wrap(async(req,res)=>{
   res.json({videos:await enrich(videos,req.user!.id)});
 }));
 mongoRouter.get('/videos/:id/resolutions',wrap(async(req,res)=>{
-  const v=await findVideo(req,req.params.id);if(!v){res.status(404).json({error:'Video not found'});return;}
+  const v=await collection('videos').findOne({$or:[{id:req.params.id},{slug:req.params.id}]});
+  if(!v){res.status(404).json({error:'Video not found'});return;}
+  if(v.status!=='PUBLISHED'&&req.user?.role!=='OWNER'){res.status(403).json({error:'This video is currently unpublished.'});return;}
   res.json({videoId:v.id,quality:'original',resolutions:[]});
 }));
 mongoRouter.get('/videos/:id/stream',wrap(async(req,res)=>handleVideoStream(req,res,req.method==='HEAD')));
@@ -109,7 +111,11 @@ const progress=wrap(async(req,res)=>{
   const p=Number(req.body?.positionSeconds),d=Number(req.body?.durationSeconds);
   if(!Number.isFinite(p)||p<0||!Number.isFinite(d)||d<=0){res.status(400).json({error:'Progress requires a finite position and positive duration.'});return;}
   const pos=Math.min(p,d), completed=pos/d>=.92?1:0;
-  await collection('watch_progress').updateOne({user_id:req.user!.id,video_id:v.id},{$set:{position_seconds:pos,duration_seconds:d,completed,updated_at:new Date().toISOString()},$setOnInsert:{id:randomUUID()}},{upsert:true});
+  const now=new Date().toISOString();
+  await Promise.all([
+    collection('videos').updateOne({id:v.id},{$set:{duration_seconds:d,updated_at:now}}),
+    collection('watch_progress').updateOne({user_id:req.user!.id,video_id:v.id},{$set:{position_seconds:pos,duration_seconds:d,completed,updated_at:now},$setOnInsert:{id:randomUUID()}},{upsert:true})
+  ]);
   res.json({success:true,positionSeconds:pos,isCompleted:Boolean(completed)});
 });
 mongoRouter.put('/progress/:videoId',progress);mongoRouter.post('/progress/:videoId',progress);

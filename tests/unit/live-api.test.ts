@@ -4,51 +4,65 @@ import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, initDatabase } from '../../src/server/db.ts';
-import { authMiddleware } from '../../src/server/auth.ts';
-import { authRouter } from '../../src/server/routes/auth-routes.ts';
-import { videoRouter } from '../../src/server/routes/video-routes.ts';
-import { userRouter } from '../../src/server/routes/user-routes.ts';
-import { adminRouter } from '../../src/server/routes/admin-routes.ts';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import { connectMongo, closeMongo, collection, mongo } from '../../src/server/mongo/store.ts';
+import { mongoAuth, mongoAuthRouter } from '../../src/server/mongo/auth.ts';
+import { mongoRouter } from '../../src/server/mongo/routes.ts';
+import { mongoAdminRouter } from '../../src/server/mongo/admin.ts';
+import { thumbnailRouter } from '../../src/server/mongo/thumbnails.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '../..');
 
-test('Live Express Server: End-to-end API and RBAC integration tests', async (t) => {
-  const app = express();
-  initDatabase();
+test('Live Express Server: End-to-end API and RBAC integration tests on MongoDB', async () => {
+  const mongod = await MongoMemoryServer.create({ binary: { version: '8.0.17', downloadDir: '/tmp/megaplayer-mongodb-binaries' } });
+  process.env.MONGODB_URI = mongod.getUri();
+  process.env.MONGODB_DATABASE = 'test_live_api';
+  await connectMongo();
 
-  const count = (db.prepare('SELECT COUNT(*) as count FROM videos').get() as any).count;
+  const count = await collection('videos').countDocuments();
   if (count === 0) {
     const now = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO videos (id, title, slug, duration_seconds, status, created_at, updated_at)
-      VALUES ('vid_live_test', 'Live Test Video', 'live-test-video', 600, 'PUBLISHED', ?, ?)
-    `).run(now, now);
-    db.prepare("INSERT INTO video_categories (video_id, category_id) VALUES ('vid_live_test', 'cat_movies')").run();
+    await collection('videos').insertOne({
+      id: 'vid_live_test',
+      title: 'Live Test Video',
+      slug: 'live-test-video',
+      duration_seconds: 600,
+      status: 'PUBLISHED',
+      category_ids: ['cat_movies'],
+      created_at: now,
+      updated_at: now,
+    });
   }
 
+  const app = express();
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
   app.use(cookieParser());
 
+  app.use('/media/thumbnails', thumbnailRouter);
   app.use('/thumbnails', express.static(path.resolve(rootDir, 'public/thumbnails')));
   app.use(express.static(path.resolve(rootDir, 'public')));
-  app.use(authMiddleware);
+  app.use(mongoAuth);
 
-  app.use('/api/v1/auth', authRouter);
-  app.use('/api/v1/videos', videoRouter);
-  app.use('/api/v1', userRouter);
-  app.use('/api/v1/admin', adminRouter);
+  app.use('/api/v1/auth', mongoAuthRouter);
+  app.use('/api/v1/admin', mongoAdminRouter);
+  app.use('/api/v1', mongoRouter);
 
-  app.get('/api/health', (req: Request, res: Response) => {
-    res.json({
-      status: 'ok',
-      platform: 'MEGA STREAM X',
-      timestamp: new Date().toISOString(),
-      version: '1.0.0',
-    });
+  app.get('/api/health', async (_req: Request, res: Response) => {
+    try {
+      await mongo().command({ ping: 1 });
+      res.json({
+        status: 'ok',
+        platform: 'MEGA STREAM X',
+        database: 'mongodb',
+        timestamp: new Date().toISOString(),
+        version: '2.0.0',
+      });
+    } catch {
+      res.status(503).json({ status: 'unavailable', database: 'mongodb' });
+    }
   });
 
   const server = app.listen(0);
@@ -61,6 +75,7 @@ test('Live Express Server: End-to-end API and RBAC integration tests', async (t)
     assert.equal(healthRes.status, 200);
     const healthData = await healthRes.json();
     assert.equal(healthData.status, 'ok');
+    assert.equal(healthData.database, 'mongodb');
 
     // 2. Unauthenticated auth check
     const meAnonRes = await fetch(`${baseUrl}/api/v1/auth/me`);
@@ -180,5 +195,7 @@ test('Live Express Server: End-to-end API and RBAC integration tests', async (t)
     assert.ok(favListData.favorites?.some((v: any) => v.id === firstVid.id));
   } finally {
     server.close();
+    await closeMongo();
+    await mongod.stop();
   }
 });

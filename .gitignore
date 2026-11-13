@@ -1,6 +1,7 @@
 node_modules/
 dist/
 data/cache/
+data/*.db
 data/*.db-shm
 data/*.db-wal
 .env

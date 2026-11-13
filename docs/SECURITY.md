@@ -13,7 +13,7 @@ To eliminate this vulnerability:
 2. **Never Transmitted to Viewers**:
    Only sanitized internal IDs (`vid_...`) are returned to the client. The frontend has zero knowledge of the cloud storage provider or the underlying URL.
 3. **Decryption in Memory**:
-   During stream requests (`/api/v1/videos/:id/stream`), the server retrieves the encrypted record from SQLite, verifies the authentication tag, decrypts the ciphertext in RAM, and pipes the decrypted plaintext byte chunks directly to the response socket.
+   During stream requests (`/api/v1/videos/:id/stream`), the server retrieves the encrypted record from MongoDB, verifies the authentication tag, decrypts the ciphertext in RAM, and pipes the decrypted plaintext byte chunks directly to the response socket.
 4. **Log Sanitization**:
    The `parseMegaUrl` utility strips the `#hash` fragment before generating displayable sanitized URLs.
 
