@@ -79,8 +79,11 @@ export const api = {
   },
 
   async logout(): Promise<{ success: boolean }> {
-    setAuthToken(null);
-    return fetchJson(`${BASE_URL}/auth/logout`, { method: 'POST' });
+    try {
+      return await fetchJson(`${BASE_URL}/auth/logout`, { method: 'POST' });
+    } finally {
+      setAuthToken(null);
+    }
   },
 
   async acceptInvite(data: { token: string; email: string; displayName: string; password: string }): Promise<{ user: User; token: string }> {

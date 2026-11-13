@@ -139,6 +139,8 @@ export default function App() {
         initialCatalogLoadedRef.current = true;
       } catch (err) {
         console.warn('Init auth fallback:', err);
+        setLibraryError(err instanceof Error ? err.message : 'Could not connect to your library.');
+        setAuthModalOpen(true);
         setLoadingVideos(false);
       }
     }
@@ -153,10 +155,20 @@ export default function App() {
 
   // Sign out
   const handleLogout = async () => {
-    await api.logout();
-    setCurrentUser(null);
-    setSessionToken(undefined);
-    setAuthModalOpen(true);
+    try {
+      await api.logout();
+    } finally {
+      ++libraryRequestRef.current;
+      initialCatalogLoadedRef.current = false;
+      setCurrentUser(null);
+      setSessionToken(undefined);
+      setVideos([]);
+      setContinueWatchingList([]);
+      setFavoritesList([]);
+      setHistoryList([]);
+      setLoadingVideos(false);
+      setAuthModalOpen(true);
+    }
   };
 
   // Toggle favorite
@@ -574,6 +586,7 @@ export default function App() {
           setCurrentUser(user);
           setSessionToken(token);
           setAuthModalOpen(false);
+          initialCatalogLoadedRef.current = true;
           refreshLibraryData();
         }}
       />
