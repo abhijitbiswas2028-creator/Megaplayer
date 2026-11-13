@@ -61,8 +61,8 @@ userRouter.get('/continue-watching', requireAuth, (req: Request, res: Response) 
   });
 });
 
-// PUT /api/v1/progress/:videoId: Update playback position (debounced from player)
-userRouter.put('/progress/:videoId', requireAuth, (req: Request, res: Response) => {
+// PUT or POST /api/v1/progress/:videoId: Update playback position (debounced from player)
+const handleProgressUpdate = (req: Request, res: Response) => {
   const userId = req.user!.id;
   const videoId = req.params.videoId;
   const { positionSeconds, durationSeconds } = req.body || {};
@@ -100,7 +100,9 @@ userRouter.put('/progress/:videoId', requireAuth, (req: Request, res: Response) 
   }
 
   res.json({ success: true, positionSeconds: pos, isCompleted: Boolean(isCompleted) });
-});
+};
+userRouter.put('/progress/:videoId', requireAuth, handleProgressUpdate);
+userRouter.post('/progress/:videoId', requireAuth, handleProgressUpdate);
 
 // GET /api/v1/favorites: List user favorites
 userRouter.get('/favorites', requireAuth, (req: Request, res: Response) => {

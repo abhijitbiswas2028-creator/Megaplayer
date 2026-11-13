@@ -149,8 +149,8 @@ videoRouter.get('/', requireAuth, (req: Request, res: Response) => {
   res.json({ videos: enrichedVideos });
 });
 
-// GET /api/v1/videos/categories: Get list of all available categories
-videoRouter.get('/categories/list', requireAuth, (req: Request, res: Response) => {
+// GET /api/v1/videos/categories and /api/v1/videos/categories/list: Get list of all available categories
+videoRouter.get(['/categories', '/categories/list'], requireAuth, (req: Request, res: Response) => {
   const categories = db.prepare(`
     SELECT c.id, c.name, c.slug, c.icon, c.description, c.sort_order,
       COUNT(vc.video_id) as video_count
