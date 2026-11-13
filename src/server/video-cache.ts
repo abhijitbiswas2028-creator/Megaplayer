@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { db } from './db.ts';
+import { mongoEnabled, collection, streamVideo, saveThumbnail } from './mongo/store.ts';
 import { extractThumbnail, inspectThumbnail } from './thumbnail.ts';
 import { withMegaThumbnailSource } from './thumbnail-source.ts';
 import { decryptSensitiveRef } from './utils/crypto.ts';
@@ -12,14 +13,17 @@ export async function refreshVideoMetadata(videoId: string, source: string) {
   const { duration, timestamp } = await extractThumbnail(source, thumbnail);
   // Store the version in the URL so library, favorites and history all invalidate it.
   const now = new Date().toISOString();
-  db.prepare('UPDATE videos SET duration_seconds = ?, thumbnail_url = ?, updated_at = ? WHERE id = ?')
+  if (mongoEnabled) {
+    const thumbnail_url = await saveThumbnail(thumbnail);
+    await collection('videos').updateOne({id:videoId}, {$set:{duration_seconds:duration,thumbnail_url,updated_at:now}});
+  } else db.prepare('UPDATE videos SET duration_seconds = ?, thumbnail_url = ?, updated_at = ? WHERE id = ?')
     .run(duration, `/thumbnails/${videoId}.jpg?v=${Date.now()}`, now, videoId);
   console.log(`[thumbnail] ${videoId}: selected frame at ${timestamp.toFixed(2)}s / ${duration.toFixed(2)}s`);
   return duration;
 }
 
 export async function repairVideoThumbnail(videoId: string, force = false) {
-  const video = db.prepare(`SELECT v.id, v.thumbnail_url, v.local_sample_path,
+  const video = mongoEnabled ? await streamVideo(videoId) : db.prepare(`SELECT v.id, v.thumbnail_url, v.local_sample_path,
     ms.encrypted_ref, ms.iv, ms.auth_tag, ms.file_size FROM videos v
     LEFT JOIN mega_sources ms ON ms.id = v.mega_source_id WHERE v.id = ?`).get(videoId) as any;
   if (!video) return 'missing';
@@ -57,7 +61,7 @@ export function queueThumbnailRepair(videoId: string) {
   })().finally(() => { worker = undefined; });
 }
 
-export function repairLibraryThumbnails() {
-  const videos = db.prepare('SELECT id FROM videos').all() as { id: string }[];
+export async function repairLibraryThumbnails() {
+  const videos = mongoEnabled ? await collection('videos').find({}, {projection:{id:1}}).toArray() : db.prepare('SELECT id FROM videos').all() as { id: string }[];
   for (const video of videos) queueThumbnailRepair(video.id);
 }

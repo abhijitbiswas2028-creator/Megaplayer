@@ -4,7 +4,7 @@ import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { initDatabase } from '../../src/server/db.ts';
+import { db, initDatabase } from '../../src/server/db.ts';
 import { authMiddleware } from '../../src/server/auth.ts';
 import { authRouter } from '../../src/server/routes/auth-routes.ts';
 import { videoRouter } from '../../src/server/routes/video-routes.ts';
@@ -18,6 +18,16 @@ const rootDir = path.resolve(__dirname, '../..');
 test('Live Express Server: End-to-end API and RBAC integration tests', async (t) => {
   const app = express();
   initDatabase();
+
+  const count = (db.prepare('SELECT COUNT(*) as count FROM videos').get() as any).count;
+  if (count === 0) {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO videos (id, title, slug, duration_seconds, status, created_at, updated_at)
+      VALUES ('vid_live_test', 'Live Test Video', 'live-test-video', 600, 'PUBLISHED', ?, ?)
+    `).run(now, now);
+    db.prepare("INSERT INTO video_categories (video_id, category_id) VALUES ('vid_live_test', 'cat_movies')").run();
+  }
 
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));

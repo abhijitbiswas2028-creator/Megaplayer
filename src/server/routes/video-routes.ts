@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.ts';
+import { mongoEnabled, collection, streamVideo, incrementViews } from '../mongo/store.ts';
 import { requireAuth, requireOwner } from '../auth.ts';
 import { megaAdapter } from '../mega-adapter.ts';
 import { parseByteRange } from '../utils/range.ts';
@@ -492,16 +493,28 @@ videoRouter.delete('/:id', requireOwner, (req: Request, res: Response) => {
   res.json({ success: true, message: 'Video and cloud references deleted.' });
 });
 
+function recordView(id: string) {
+  if (mongoEnabled) { void incrementViews(id).catch(() => console.warn('Could not record view')); return; }
+  db.prepare('UPDATE videos SET view_count = view_count + 1 WHERE id = ?').run(id);
+}
+function recordMetric(id: string, video_id: string, user_id: string, bytes_streamed: number, range_header: string, status_code: number, timestamp: string) {
+  if (mongoEnabled) {
+    void collection('stream_metrics').insertOne({id,video_id,user_id,bytes_streamed,range_header,status_code,timestamp}).catch(() => console.warn('Could not record stream metric'));
+    return;
+  }
+  db.prepare('INSERT INTO stream_metrics (id,video_id,user_id,bytes_streamed,range_header,status_code,timestamp) VALUES (?,?,?,?,?,?,?)').run(id,video_id,user_id,bytes_streamed,range_header,status_code,timestamp);
+}
+
 /**
  * CRITICAL VIDEO STREAMING ENGINE:
  * Handles GET and HEAD requests with RFC 7233 byte-range streaming,
  * authenticated access, upstream abort handling, and metrics logging.
  */
-async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
+export async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
   const videoId = req.params.id;
   const isOwner = req.user?.role === 'OWNER';
 
-  const video = db.prepare(`
+  const video = mongoEnabled ? await streamVideo(videoId) : db.prepare(`
     SELECT v.id, v.title, v.status, v.mega_source_id, v.local_sample_path,
            ms.encrypted_ref, ms.iv, ms.auth_tag, ms.file_size, ms.mime_type
     FROM videos v
@@ -641,7 +654,7 @@ async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
       if (isInitialChunk) {
         setImmediate(() => {
           try {
-            db.prepare('UPDATE videos SET view_count = view_count + 1 WHERE id = ?').run(video.id);
+            recordView(video.id);
           } catch {}
         });
       }
@@ -649,10 +662,7 @@ async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
       // Record stream metric asynchronously without blocking pipeline
       setImmediate(() => {
         try {
-          db.prepare(`
-            INSERT INTO stream_metrics (id, video_id, user_id, bytes_streamed, range_header, status_code, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).run(
+          recordMetric(
             `strm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             video.id,
             req.user?.id || 'anon',
@@ -706,11 +716,8 @@ async function handleVideoStream(req: Request, res: Response, isHead: boolean) {
     // Increment view count and metrics asynchronously
     setImmediate(() => {
       try {
-        db.prepare('UPDATE videos SET view_count = view_count + 1 WHERE id = ?').run(video.id);
-        db.prepare(`
-          INSERT INTO stream_metrics (id, video_id, user_id, bytes_streamed, range_header, status_code, timestamp)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(
+        recordView(video.id);
+        recordMetric(
           `strm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           video.id,
           req.user?.id || 'anon',
@@ -791,7 +798,7 @@ function proxyHttpStream(
 
       // Increment view count on successful start
       if (statusCode === 200 || (statusCode === 206 && (!rangeHeader || rangeHeader.includes('bytes=0-')))) {
-        db.prepare('UPDATE videos SET view_count = view_count + 1 WHERE id = ?').run(videoId);
+        recordView(videoId);
       }
     }
   );
