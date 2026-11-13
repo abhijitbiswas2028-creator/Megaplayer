@@ -155,11 +155,11 @@ export function createSession(userId: string, req: Request, res: Response): stri
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(`sess_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`, userId, token, ip, ua, expiresAt, now.toISOString());
 
-  // Set secure HttpOnly cookie
+  // Set secure HttpOnly cookie (sameSite 'none' in production supports cross-origin Vercel -> Railway deployment)
   res.cookie('msx_session', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     maxAge: 30 * 24 * 3600 * 1000,
     path: '/',
   });

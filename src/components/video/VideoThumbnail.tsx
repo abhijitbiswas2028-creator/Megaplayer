@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Play } from 'lucide-react';
+import { resolveBackendUrl } from '../../lib/api.ts';
 
 /** Renders video thumbnail with automatic cache busting and error recovery. */
 export function VideoThumbnail({
@@ -21,13 +22,14 @@ export function VideoThumbnail({
     setRetrySrc(null);
   }, [src]);
 
-  const activeSrc = retrySrc || src;
+  const normalizedSrc = resolveBackendUrl(src);
+  const activeSrc = retrySrc || normalizedSrc;
 
   const handleImageError = () => {
-    if (!retrySrc && src) {
+    if (!retrySrc && normalizedSrc) {
       // First attempt to bust any stale browser cache with a direct timestamp
-      const separator = src.includes('?') ? '&' : '?';
-      setRetrySrc(`${src}${separator}r=${Date.now()}`);
+      const separator = normalizedSrc.includes('?') ? '&' : '?';
+      setRetrySrc(`${normalizedSrc}${separator}r=${Date.now()}`);
     } else {
       setHasError(true);
     }

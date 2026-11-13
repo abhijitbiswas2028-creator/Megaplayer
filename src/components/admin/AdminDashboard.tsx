@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Video, Category, Invitation, AdminStats, AuditLog } from '../../types/index.ts';
-import { api } from '../../lib/api.ts';
+import { api, resolveBackendUrl } from '../../lib/api.ts';
 import { formatDuration } from '../video/VideoCard.tsx';
 import {
   ShieldAlert,
@@ -795,7 +795,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-3">
                         <img
-                          src={v.thumbnail_url}
+                          src={resolveBackendUrl(v.thumbnail_url)}
                           alt=""
                           className="w-12 h-8 rounded-lg object-cover bg-slate-800"
                         />

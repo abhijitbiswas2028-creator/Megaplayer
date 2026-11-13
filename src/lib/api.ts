@@ -1,6 +1,15 @@
 import { User, Video, Category, Invitation, AdminStats, AuditLog } from '../types/index.ts';
 
-const BASE_URL = '/api/v1';
+export const API_ORIGIN = (import.meta.env.VITE_API_URL ? String(import.meta.env.VITE_API_URL).replace(/\/$/, '') : '');
+const BASE_URL = `${API_ORIGIN}/api/v1`;
+
+export function resolveBackendUrl(url?: string | null): string {
+  if (!url) return '';
+  if (url.startsWith('/') && API_ORIGIN) {
+    return `${API_ORIGIN}${url}`;
+  }
+  return url;
+}
 
 let currentAuthToken: string | null = null;
 

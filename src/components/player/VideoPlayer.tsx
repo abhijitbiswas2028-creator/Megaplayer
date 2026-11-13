@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Video } from '../../types/index.ts';
-import { api } from '../../lib/api.ts';
+import { api, resolveBackendUrl } from '../../lib/api.ts';
 import { formatDuration } from '../video/VideoCard.tsx';
 import {
   Play,
@@ -120,7 +120,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   }, [retryPlayback]);
 
   // Direct MEGA HD stream URL with session token
-  const streamUrl = `/api/v1/videos/${video.id}/stream${sessionToken ? `?token=${encodeURIComponent(sessionToken)}` : ''}`;
+  const streamUrl = resolveBackendUrl(`/api/v1/videos/${video.id}/stream${sessionToken ? `?token=${encodeURIComponent(sessionToken)}` : ''}`);
 
   // Debounced progress reporting
   const lastSavedPositionRef = useRef<number | null>(null);
@@ -389,7 +389,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           <video
         ref={videoRef}
         src={streamUrl}
-        poster={video.thumbnail_url}
+        poster={resolveBackendUrl(video.thumbnail_url)}
         preload="auto"
         autoPlay
         crossOrigin="anonymous"
