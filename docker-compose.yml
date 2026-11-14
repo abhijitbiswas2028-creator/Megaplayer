@@ -10,6 +10,8 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - MONGODB_URI=${MONGODB_URI}
+      - MONGODB_DATABASE=${MONGODB_DATABASE:-megaplayer}
       - MEGA_ENCRYPTION_KEY=${MEGA_ENCRYPTION_KEY:-mega_stream_x_master_aes256_gcm_secret_key_change_in_production!}
     volumes:
       - ./data:/app/data

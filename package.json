@@ -1,7 +1,8 @@
 {
-  "name": "react-example",
+  "name": "megaplayer",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.0.0",
+  "description": "MEGA STREAM X — Private Cinema Cloud Streaming with Pure MongoDB Architecture",
   "type": "module",
   "scripts": {
     "antigravity": "node scripts/antigravity.mjs",
