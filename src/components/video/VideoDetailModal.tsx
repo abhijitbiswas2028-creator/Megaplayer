@@ -1,7 +1,8 @@
 import { VideoThumbnail } from './VideoThumbnail.tsx';
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Video } from '../../types/index.ts';
 import { formatDuration } from './VideoCard.tsx';
+import { api } from '../../lib/api.ts';
 import {
   X,
   Play,
@@ -31,6 +32,10 @@ export const VideoDetailModal: React.FC<VideoDetailModalProps> = ({
   onPlay,
   onToggleFavorite,
 }) => {
+  useEffect(() => {
+    void api.prefetchVideoStream(video.id);
+  }, [video.id]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 sm:p-6 overflow-y-auto"
@@ -45,6 +50,7 @@ export const VideoDetailModal: React.FC<VideoDetailModalProps> = ({
           <VideoThumbnail
             src={video.thumbnail_url}
             title={video.title}
+            eager={true}
             className="w-full h-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-[#12151e] via-[#12151e]/40 to-transparent" />

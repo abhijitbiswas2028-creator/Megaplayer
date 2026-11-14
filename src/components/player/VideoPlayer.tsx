@@ -7,6 +7,7 @@ import {
   Pause,
   RotateCcw,
   RotateCw,
+  SkipForward,
   Volume2,
   VolumeX,
   Maximize,
@@ -26,6 +27,8 @@ import {
 
 interface VideoPlayerProps {
   video: Video;
+  nextVideo?: Video;
+  onPlayNext?: (video: Video) => void;
   onClose: () => void;
   onVideoEnded?: () => void;
   sessionToken?: string;
@@ -36,6 +39,8 @@ const PLAYBACK_SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   video,
+  nextVideo,
+  onPlayNext,
   onClose,
   onVideoEnded,
   sessionToken,
@@ -237,6 +242,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     });
   }, [video.id]);
 
+  // Prefetch next video stream in background to guarantee instant transition
+  useEffect(() => {
+    if (nextVideo?.id) {
+      const timer = setTimeout(() => {
+        void api.prefetchVideoStream(nextVideo.id, sessionToken);
+      }, 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [nextVideo?.id, sessionToken]);
+
   // Keyboard shortcuts listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -291,6 +306,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         case 'C':
           e.preventDefault();
           setShowSubtitles((prev) => !prev);
+          break;
+        case 'n':
+        case 'N':
+          if (nextVideo && onPlayNext) {
+            e.preventDefault();
+            onPlayNext(nextVideo);
+          }
           break;
         case 'Escape':
           if (showShortcutsModal) {
@@ -474,6 +496,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           setIsBuffering(false);
           saveProgress(duration, duration);
           if (onVideoEnded) onVideoEnded();
+          if (nextVideo && onPlayNext) {
+            onPlayNext(nextVideo);
+          }
         }}
         onError={(_e) => {
           const code = videoRef.current?.error?.code;
@@ -697,6 +722,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               <RotateCw className="w-4 h-4" />
             </button>
 
+            {nextVideo && onPlayNext && (
+              <button
+                onClick={() => onPlayNext(nextVideo)}
+                className="p-2 text-slate-300 hover:text-white transition-colors cursor-pointer"
+                title={`Next: ${nextVideo.title} (N)`}
+                aria-label="Next video"
+              >
+                <SkipForward className="w-4 h-4 text-violet-400 hover:text-violet-300" />
+              </button>
+            )}
+
             {/* Volume */}
             <div className="flex items-center gap-2 group/volume">
               <button
@@ -853,6 +889,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 { key: 'F', desc: 'Toggle Fullscreen mode' },
                 { key: 'M', desc: 'Toggle Audio Mute' },
                 { key: 'C', desc: 'Toggle Subtitles (CC)' },
+                { key: 'N', desc: 'Skip to next video' },
                 { key: 'Esc', desc: 'Exit Fullscreen / Close Player' },
               ].map((item, idx) => (
                 <div key={idx} className="py-2.5 flex items-center justify-between">

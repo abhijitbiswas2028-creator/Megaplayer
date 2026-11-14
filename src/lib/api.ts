@@ -35,6 +35,23 @@ export function getAuthToken(): string | null {
   return currentAuthToken;
 }
 
+// Client-side in-memory response cache for instant UI rendering
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+const clientCache = new Map<string, CacheEntry<any>>();
+
+export function invalidateClientCache(urlPrefix?: string) {
+  if (urlPrefix) {
+    for (const key of clientCache.keys()) {
+      if (key.includes(urlPrefix)) clientCache.delete(key);
+    }
+  } else {
+    clientCache.clear();
+  }
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const token = getAuthToken();
   const res = await fetch(url, {
@@ -83,6 +100,7 @@ export const api = {
       return await fetchJson(`${BASE_URL}/auth/logout`, { method: 'POST' });
     } finally {
       setAuthToken(null);
+      invalidateClientCache();
     }
   },
 
@@ -112,11 +130,37 @@ export const api = {
     if (params?.sort) q.set('sort', params.sort);
     if (params?.limit) q.set('limit', String(params.limit));
     if (params?.offset) q.set('offset', String(params.offset));
-    return fetchJson(`${BASE_URL}/videos?${q.toString()}`);
+    const url = `${BASE_URL}/videos?${q.toString()}`;
+    const cached = clientCache.get(url);
+    const now = Date.now();
+    if (cached && now - cached.timestamp < 15_000) {
+      return cached.data;
+    }
+    const res = await fetchJson<{ videos: Video[] }>(url);
+    clientCache.set(url, { data: res, timestamp: now });
+    return res;
   },
 
   async getVideo(id: string): Promise<{ video: Video }> {
-    return fetchJson(`${BASE_URL}/videos/${id}`);
+    const url = `${BASE_URL}/videos/${id}`;
+    const cached = clientCache.get(url);
+    const now = Date.now();
+    if (cached && now - cached.timestamp < 30_000) {
+      return cached.data;
+    }
+    const res = await fetchJson<{ video: Video }>(url);
+    clientCache.set(url, { data: res, timestamp: now });
+    return res;
+  },
+
+  async prefetchVideoStream(id: string, sessionToken?: string): Promise<void> {
+    const token = sessionToken || getAuthToken();
+    const url = resolveBackendUrl(`/api/v1/videos/${id}/stream${token ? `?token=${encodeURIComponent(token)}` : ''}`);
+    try {
+      await fetch(url, { method: 'HEAD', credentials: 'include' });
+    } catch {
+      // Ignore background prefetch errors
+    }
   },
 
   async getVideoResolutions(id: string): Promise<{ videoId: string; streamVariant: 'source'; resolutions: import('../types/index.ts').VideoResolution[] }> {
@@ -124,7 +168,15 @@ export const api = {
   },
 
   async getCategories(): Promise<{ categories: Category[] }> {
-    return fetchJson(`${BASE_URL}/videos/categories/list`);
+    const url = `${BASE_URL}/videos/categories/list`;
+    const cached = clientCache.get(url);
+    const now = Date.now();
+    if (cached && now - cached.timestamp < 60_000) {
+      return cached.data;
+    }
+    const res = await fetchJson<{ categories: Category[] }>(url);
+    clientCache.set(url, { data: res, timestamp: now });
+    return res;
   },
 
   async validateMegaLink(url: string): Promise<{
@@ -156,6 +208,7 @@ export const api = {
     isFeatured?: boolean;
     status?: 'PUBLISHED' | 'UNPUBLISHED';
   }): Promise<{ success: boolean; videoId: string }> {
+    invalidateClientCache('/videos');
     return fetchJson(`${BASE_URL}/videos`, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -163,6 +216,7 @@ export const api = {
   },
 
   async updateVideo(id: string, data: Partial<Video> & { categoryIds?: string[] }): Promise<{ success: boolean }> {
+    invalidateClientCache('/videos');
     return fetchJson(`${BASE_URL}/videos/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
@@ -170,6 +224,7 @@ export const api = {
   },
 
   async deleteVideo(id: string): Promise<{ success: boolean }> {
+    invalidateClientCache('/videos');
     return fetchJson(`${BASE_URL}/videos/${id}`, {
       method: 'DELETE',
     });

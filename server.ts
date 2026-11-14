@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
+import compression from 'compression';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { repairLibraryThumbnails } from './src/server/video-cache.ts';
@@ -30,6 +31,17 @@ const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const app = express();
+
+// High-performance gzip/brotli compression (bypasses raw video streams)
+app.use(compression({
+  filter: (req, res) => {
+    if (req.headers['x-no-compression'] || req.path.includes('/stream') || req.path.includes('/thumbnails/')) {
+      return false;
+    }
+    return compression.filter(req, res);
+  },
+  threshold: 1024,
+}));
 
 // Middleware
 app.use(express.json({ limit: '1mb' }));

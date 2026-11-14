@@ -5,10 +5,37 @@ import { generateSecureToken, hashPassword, verifyPassword } from '../utils/cryp
 
 export const wrap = (fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>): RequestHandler => (req,res,next) => { Promise.resolve(fn(req,res,next)).catch(next); };
 export const publicUser = (u: any) => ({ id:u.id, email:u.email, displayName:u.display_name, role:u.role, status:u.status });
+
+// ── In-memory session cache: avoids hitting MongoDB $aggregate+$lookup on every request ──
+const SESSION_CACHE_TTL = 30_000; // 30 seconds
+const sessionCache = new Map<string, { user: any; cachedAt: number }>();
+
+function pruneSessionCache() {
+  const now = Date.now();
+  for (const [k, v] of sessionCache) {
+    if (now - v.cachedAt > SESSION_CACHE_TTL) sessionCache.delete(k);
+  }
+}
+// Prune expired entries every 60s to prevent unbounded growth
+setInterval(pruneSessionCache, 60_000).unref();
+
+export function invalidateSessionCache(token?: string) {
+  if (token) sessionCache.delete(token);
+  else sessionCache.clear();
+}
+
 export const mongoAuth = wrap(async (req,res,next) => {
   const bearer = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : undefined;
   const token = bearer || req.cookies?.msx_session || (typeof req.query.token === 'string' ? req.query.token : undefined);
   if (token) {
+    // Check in-memory cache first
+    const cached = sessionCache.get(token);
+    if (cached && Date.now() - cached.cachedAt < SESSION_CACHE_TTL) {
+      req.user = cached.user;
+      req.sessionToken = token;
+      next();
+      return;
+    }
     const [result] = await collection('sessions').aggregate([
       {$match:{token,expires_at:{$gt:new Date().toISOString()}}},
       {$limit:1},
@@ -16,7 +43,12 @@ export const mongoAuth = wrap(async (req,res,next) => {
       {$unwind:'$user'},
       {$project:{user:1}}
     ]).toArray();
-    if (result) { req.user = publicUser(result.user); req.sessionToken = token; }
+    if (result) {
+      const user = publicUser(result.user);
+      sessionCache.set(token, { user, cachedAt: Date.now() });
+      req.user = user;
+      req.sessionToken = token;
+    }
   }
   next();
 });
@@ -43,7 +75,10 @@ mongoAuthRouter.post('/login',wrap(async(req,res)=>{
   res.json({user:publicUser(user),token});
 }));
 mongoAuthRouter.post('/logout',wrap(async(req,res)=>{
-  if(req.sessionToken) await collection('sessions').deleteOne({token:req.sessionToken});
+  if(req.sessionToken) {
+    invalidateSessionCache(req.sessionToken);
+    await collection('sessions').deleteOne({token:req.sessionToken});
+  }
   res.clearCookie('msx_session',{path:'/',secure:process.env.NODE_ENV==='production',sameSite:process.env.NODE_ENV==='production'?'none':'lax'});
   res.json({success:true});
 }));

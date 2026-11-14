@@ -70,9 +70,9 @@ export default function App() {
   const [libraryError, setLibraryError] = useState<string | null>(null);
 
   // Fetch full library data (categories, personalized lists, videos)
-  const refreshLibraryData = async () => {
+  const refreshLibraryData = async (silent = false) => {
     const requestId = ++libraryRequestRef.current;
-    setLoadingVideos(true);
+    if (!silent && videos.length === 0) setLoadingVideos(true);
     setLibraryError(null);
     try {
       const current = () => requestId === libraryRequestRef.current;
@@ -270,7 +270,7 @@ export default function App() {
         {/* Main Content Area */}
         <main className="flex-1 overflow-y-auto pb-16 min-w-0">
           {libraryError && <div role="alert" className="m-6 rounded-xl border border-rose-400/20 bg-rose-400/5 p-4 text-sm text-rose-200">
-            {libraryError} <button onClick={refreshLibraryData} className="ml-3 underline cursor-pointer">Try again</button>
+            {libraryError} <button onClick={() => refreshLibraryData()} className="ml-3 underline cursor-pointer">Try again</button>
           </div>}
           {/* VIEW: ADMIN SUITE */}
           {currentView.startsWith('admin-') && currentUser?.role === 'OWNER' && (
@@ -288,7 +288,7 @@ export default function App() {
                   : 'overview'
               }
               categories={categories}
-              onVideoCreated={refreshLibraryData}
+              onVideoCreated={() => refreshLibraryData()}
               onPreviewVideo={(video) => handleStartPlayback(video)}
             />
             </Suspense>
@@ -354,10 +354,11 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                      {videos.map((video) => (
+                      {videos.map((video, idx) => (
                         <VideoCard
                           key={video.id}
                           video={video}
+                          eager={idx < 12}
                           onPlay={(v) => handleStartPlayback(v)}
                           onViewDetails={(v) => setSelectedDetailVideo(v)}
                           onToggleFavorite={handleToggleFavorite}
@@ -445,10 +446,11 @@ export default function App() {
 
                   return (
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                      {targetList.map((video) => (
+                      {targetList.map((video, idx) => (
                         <VideoCard
                           key={video.id}
                           video={video}
+                          eager={idx < 12}
                           onPlay={(v) => handleStartPlayback(v)}
                           onViewDetails={(v) => setSelectedDetailVideo(v)}
                           onToggleFavorite={handleToggleFavorite}
@@ -551,21 +553,27 @@ export default function App() {
       </div>
 
       {/* VIDEO PLAYER CINEMA OVERLAY */}
-      {activePlaybackVideo && (
-        <VideoPlayer
-          key={activePlaybackVideo.id}
-          video={activePlaybackVideo}
-          sessionToken={sessionToken}
-          initialMode={(activePlaybackVideo as any)._initialMode}
-          onClose={() => {
-            setActivePlaybackVideo(null);
-            refreshLibraryData();
-          }}
-          onVideoEnded={() => {
-            refreshLibraryData();
-          }}
-        />
-      )}
+      {activePlaybackVideo && (() => {
+        const activeIndex = videos.findIndex(v => v.id === activePlaybackVideo.id);
+        const nextVideo = activeIndex >= 0 && activeIndex < videos.length - 1 ? videos[activeIndex + 1] : undefined;
+        return (
+          <VideoPlayer
+            key={activePlaybackVideo.id}
+            video={activePlaybackVideo}
+            nextVideo={nextVideo}
+            onPlayNext={(next) => handleStartPlayback(next)}
+            sessionToken={sessionToken}
+            initialMode={(activePlaybackVideo as any)._initialMode}
+            onClose={() => {
+              setActivePlaybackVideo(null);
+              refreshLibraryData(true);
+            }}
+            onVideoEnded={() => {
+              refreshLibraryData(true);
+            }}
+          />
+        );
+      })()}
 
       {/* VIDEO DETAIL MODAL */}
       {selectedDetailVideo && (

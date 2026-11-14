@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
-import { collection } from './store.ts';
+import { collection, invalidateStreamVideoCache } from './store.ts';
 import { wrap, audit } from './auth.ts';
 import { requireAuth, requireOwner } from '../auth.ts';
-import { enrich, visible, findVideo, escapeRegex, categoryIds } from './catalog.ts';
+import { enrich, visible, findVideo, escapeRegex, categoryIds, getCachedCategories } from './catalog.ts';
 import { megaAdapter } from '../mega-adapter.ts';
 import { parseMegaUrl } from '../utils/mega-url.ts';
 import { encryptSensitiveRef } from '../utils/crypto.ts';
@@ -13,15 +13,17 @@ import { handleVideoStream } from '../routes/video-routes.ts';
 export const mongoRouter=Router();
 mongoRouter.use(requireAuth);
 const categories=wrap(async(req,res)=>{
-  const cats=await collection('categories').find({},{projection:{_id:0}}).sort({sort_order:1}).toArray();
+  const cats=await getCachedCategories();
   const counts=await collection('videos').aggregate([{$match:visible(req)},{$unwind:'$category_ids'},{$group:{_id:'$category_ids',count:{$sum:1}}}]).toArray();
+  res.set('Cache-Control', 'private, max-age=60');
   res.json({categories:cats.map(c=>({...c,video_count:counts.find(v=>v._id===c.id)?.count||0}))});
 });
 mongoRouter.get(['/categories','/videos/categories','/videos/categories/list'],categories);
 mongoRouter.get('/videos',wrap(async(req,res)=>{
   const filter=visible(req);
   if(typeof req.query.category==='string'&&req.query.category!=='all'){
-    const cat=await collection('categories').findOne({$or:[{id:req.query.category},{slug:req.query.category}]});
+    const allCats=await getCachedCategories();
+    const cat=allCats.find(c=>c.id===req.query.category||c.slug===req.query.category);
     if(!cat){res.json({videos:[]});return;}
     filter.category_ids=cat.id;
   }
@@ -33,6 +35,7 @@ mongoRouter.get('/videos',wrap(async(req,res)=>{
   const limit=Math.min(200,Math.max(1,parseInt(String(req.query.limit),10)||100));
   const offset=Math.max(0,parseInt(String(req.query.offset),10)||0);
   const videos=await collection('videos').find(filter).sort(sort).skip(offset).limit(limit).toArray();
+  res.set('Cache-Control', 'private, max-age=10');
   res.json({videos:await enrich(videos,req.user!.id)});
 }));
 mongoRouter.get('/videos/:id/resolutions',wrap(async(req,res)=>{
@@ -87,6 +90,7 @@ mongoRouter.patch('/videos/:id',requireOwner,wrap(async(req,res)=>{
   if(b.status!==undefined)update.status=b.status==='UNPUBLISHED'?'UNPUBLISHED':'PUBLISHED';
   if(b.categoryIds!==undefined)update.category_ids=await categoryIds(b.categoryIds);
   await collection('videos').updateOne({id:v.id},{$set:update});
+  invalidateStreamVideoCache(v.id);
   res.json({success:true});
 }));
 mongoRouter.delete('/videos/:id',requireOwner,wrap(async(req,res)=>{
@@ -94,6 +98,7 @@ mongoRouter.delete('/videos/:id',requireOwner,wrap(async(req,res)=>{
   await collection('videos').deleteOne({id:v.id});
   await Promise.all(['favorites','watch_progress','playlist_items'].map(n=>collection(n).deleteMany({video_id:v.id})));
   if(v.mega_source_id)await collection('mega_sources').deleteOne({id:v.mega_source_id});
+  invalidateStreamVideoCache(v.id);
   await audit(req,'VIDEO_DELETED','VIDEO',v.id);res.json({success:true});
 }));
 for(const [route,name,key] of [['history','watch_progress','history'],['continue-watching','watch_progress','continueWatching'],['favorites','favorites','favorites']]){

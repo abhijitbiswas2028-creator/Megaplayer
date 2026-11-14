@@ -161,10 +161,25 @@ export async function saveThumbnail(file: string) {
   return `/media/thumbnails/${hash}`;
 }
 
+// In-memory mega_sources cache: sources are immutable once inserted, avoiding repeated DB queries
+const sourceCache = new Map<string, any>();
+
+export function invalidateStreamVideoCache(sourceId?: string) {
+  if (sourceId) sourceCache.delete(sourceId);
+  else sourceCache.clear();
+}
+
 export async function streamVideo(id: string) {
   const video = await collection('videos').findOne({ $or: [{ id }, { slug: id }] });
   if (!video) return null;
-  const source = video.mega_source_id ? await collection('mega_sources').findOne({ id: video.mega_source_id }) : null;
+  let source = null;
+  if (video.mega_source_id) {
+    source = sourceCache.get(video.mega_source_id);
+    if (!source) {
+      source = await collection('mega_sources').findOne({ id: video.mega_source_id });
+      if (source) sourceCache.set(video.mega_source_id, source);
+    }
+  }
   return { ...source, ...video };
 }
 

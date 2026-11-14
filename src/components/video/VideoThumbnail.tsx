@@ -50,6 +50,7 @@ export function VideoThumbnail({
       src={activeSrc}
       alt={title}
       loading={eager ? 'eager' : 'lazy'}
+      fetchPriority={eager ? 'high' : 'auto'}
       decoding="async"
       onError={handleImageError}
       className={className}

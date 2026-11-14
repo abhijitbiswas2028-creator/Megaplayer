@@ -2,12 +2,14 @@ import React from 'react';
 import { Video } from '../../types/index.ts';
 import { Play, Info, Heart } from 'lucide-react';
 import { VideoThumbnail } from './VideoThumbnail.tsx';
+import { api } from '../../lib/api.ts';
 
 interface VideoCardProps {
   video: Video;
   onPlay: (video: Video) => void;
   onViewDetails: (video: Video) => void;
   onToggleFavorite?: (video: Video) => void;
+  eager?: boolean;
 }
 
 export function formatDuration(seconds: number): string {
@@ -18,14 +20,18 @@ export function formatDuration(seconds: number): string {
   return `${hrs ? `${hrs}:` : ''}${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
-function VideoCardComponent({ video, onPlay, onViewDetails, onToggleFavorite }: VideoCardProps) {
+function VideoCardComponent({ video, onPlay, onViewDetails, onToggleFavorite, eager }: VideoCardProps) {
   const duration = video.watch_duration || video.duration_seconds;
   const percent = duration > 0 ? Math.min(100, Math.max(0, (video.watch_position || 0) / duration * 100)) : 0;
 
-  return <article className="group min-w-0">
+  const handleWarmStream = () => {
+    void api.prefetchVideoStream(video.id);
+  };
+
+  return <article className="group min-w-0" onMouseEnter={handleWarmStream} onFocus={handleWarmStream}>
     <div className="relative aspect-video overflow-hidden rounded-xl bg-[#171a22] ring-1 ring-white/5">
       <button onClick={() => onPlay(video)} className="absolute inset-0 w-full h-full cursor-pointer" aria-label={`Play ${video.title}`}>
-        <VideoThumbnail src={video.thumbnail_url} title={video.title} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]" />
+        <VideoThumbnail src={video.thumbnail_url} title={video.title} eager={eager} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]" />
         <span className="absolute inset-0 flex items-center justify-center bg-black/15 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
           <span className="rounded-full bg-white/95 text-black p-3"><Play className="w-5 h-5 fill-current" /></span>
         </span>

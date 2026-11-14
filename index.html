@@ -9,6 +9,11 @@
     <meta property="og:description" content="Private, invitation-only personal video streaming platform with authenticated cloud storage byte-range streaming." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <!-- Preconnect to MEGA cloud origins to reduce video start latency -->
+    <link rel="preconnect" href="https://mega.nz" crossorigin />
+    <link rel="dns-prefetch" href="https://mega.nz" />
+    <link rel="dns-prefetch" href="https://mega.co.nz" />
+    <link rel="dns-prefetch" href="https://mega.io" />
   </head>
   <body>
     <div id="root"></div>
