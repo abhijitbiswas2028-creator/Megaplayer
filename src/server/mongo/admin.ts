@@ -17,8 +17,14 @@ mongoAdminRouter.get('/stats',wrap(async(req,res)=>{
  ]);res.json({videos,users,storage,streaming:{...streaming,activeSessions}});
 }));
 mongoAdminRouter.get('/users',wrap(async(req,res)=>{
- const users=await collection('users').find({},{projection:{_id:0,password_hash:0,salt:0}}).sort({created_at:-1}).toArray();
- res.json({users:await Promise.all(users.map(async u=>({...u,active_sessions:await collection('sessions').countDocuments({user_id:u.id,expires_at:{$gt:new Date().toISOString()}}),watched_videos_count:await collection('watch_progress').countDocuments({user_id:u.id})})))});
+ const users=await collection('users').aggregate([
+  {$sort:{created_at:-1}},
+  {$lookup:{from:'sessions',localField:'id',foreignField:'user_id',pipeline:[{$match:{expires_at:{$gt:new Date().toISOString()}}},{$count:'n'}],as:'sessions'}},
+  {$lookup:{from:'watch_progress',localField:'id',foreignField:'user_id',pipeline:[{$count:'n'}],as:'progress'}},
+  {$set:{active_sessions:{$ifNull:[{$arrayElemAt:['$sessions.n',0]},0]},watched_videos_count:{$ifNull:[{$arrayElemAt:['$progress.n',0]},0]}}},
+  {$project:{_id:0,password_hash:0,salt:0,sessions:0,progress:0}}
+ ]).toArray();
+ res.json({users});
 }));
 mongoAdminRouter.patch('/users/:id/status',wrap(async(req,res)=>{
  const status=req.body?.status;

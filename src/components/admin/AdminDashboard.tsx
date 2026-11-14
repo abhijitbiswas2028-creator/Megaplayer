@@ -152,11 +152,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   useEffect(() => {
     loadStats();
-    loadVideos();
-    loadInvites();
-    loadUsers();
-    loadAuditLogs();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'overview') loadAuditLogs();
+    if (activeTab === 'manage-videos') loadVideos();
+    if (activeTab === 'invitations') loadInvites();
+    if (activeTab === 'friends') loadUsers();
+  }, [activeTab]);
 
   // Validate MEGA link with live API
   const handleValidateMega = async () => {

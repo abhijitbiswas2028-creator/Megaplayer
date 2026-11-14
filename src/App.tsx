@@ -75,20 +75,22 @@ export default function App() {
     setLoadingVideos(true);
     setLibraryError(null);
     try {
-      const [vRes, cRes, cwRes, fRes, hRes] = await Promise.all([
-        api.getVideos({ category: selectedCategory !== 'all' ? selectedCategory : undefined, search: debouncedSearchQuery || searchQuery || undefined, sort: sortBy }),
-        api.getCategories(),
-        api.getContinueWatching(),
-        api.getFavorites(),
-        api.getWatchHistory(),
-      ]);
-
-      if (requestId !== libraryRequestRef.current) return;
-      setVideos(vRes.videos);
-      setCategories(cRes.categories);
-      setContinueWatchingList(cwRes.continueWatching);
-      setFavoritesList(fRes.favorites);
-      setHistoryList(hRes.history);
+      const current = () => requestId === libraryRequestRef.current;
+      const catalog = api.getVideos({ category: selectedCategory !== 'all' ? selectedCategory : undefined, search: debouncedSearchQuery || searchQuery || undefined, sort: sortBy })
+        .then(result => { if (current()) { setVideos(result.videos); setLoadingVideos(false); } });
+      const secondary = [
+        api.getCategories().then(r => { if (current()) setCategories(r.categories); }),
+        api.getContinueWatching().then(r => { if (current()) setContinueWatchingList(r.continueWatching); }),
+        api.getFavorites().then(r => { if (current()) setFavoritesList(r.favorites); }),
+        api.getWatchHistory().then(r => { if (current()) setHistoryList(r.history); }),
+      ];
+      // Render the catalog immediately; independent panels must not hold it up.
+      void Promise.allSettled(secondary).then(results => {
+        if (current() && results.some(r => r.status === 'rejected')) {
+          setLibraryError('Some library panels could not load. Please retry.');
+        }
+      });
+      await catalog;
     } catch (err) {
       if (requestId === libraryRequestRef.current) setLibraryError(err instanceof Error ? err.message : 'Could not load videos.');
     } finally {

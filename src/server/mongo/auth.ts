@@ -9,9 +9,14 @@ export const mongoAuth = wrap(async (req,res,next) => {
   const bearer = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : undefined;
   const token = bearer || req.cookies?.msx_session || (typeof req.query.token === 'string' ? req.query.token : undefined);
   if (token) {
-    const session = await collection('sessions').findOne({ token, expires_at: { $gt: new Date().toISOString() } });
-    const user = session && await collection('users').findOne({ id:session.user_id, status:'ACTIVE' });
-    if (user) { req.user = publicUser(user); req.sessionToken = token; }
+    const [result] = await collection('sessions').aggregate([
+      {$match:{token,expires_at:{$gt:new Date().toISOString()}}},
+      {$limit:1},
+      {$lookup:{from:'users',localField:'user_id',foreignField:'id',pipeline:[{$match:{status:'ACTIVE'}},{$project:{id:1,email:1,display_name:1,role:1,status:1}}],as:'user'}},
+      {$unwind:'$user'},
+      {$project:{user:1}}
+    ]).toArray();
+    if (result) { req.user = publicUser(result.user); req.sessionToken = token; }
   }
   next();
 });
