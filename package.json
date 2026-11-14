@@ -22,6 +22,7 @@
     "@types/compression": "^1.8.1",
     "@types/cookie-parser": "^1.4.10",
     "@types/video.js": "^7.3.58",
+    "@vercel/speed-insights": "^2.1.0",
     "@vitejs/plugin-react": "^6.1.1",
     "compression": "^1.8.2",
     "cookie-parser": "^1.4.7",
