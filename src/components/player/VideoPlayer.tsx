@@ -468,6 +468,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           if (Number.isFinite(dur) && dur > 0) {
             setDuration(dur);
             saveProgress(videoRef.current.currentTime, dur);
+            // Immediately sync accurate duration to backend if different from initial video data
+            if (Math.abs((video.duration_seconds || 0) - dur) > 0.5) {
+              api.updateWatchProgress(video.id, videoRef.current.currentTime || 0, dur).catch(() => {});
+            }
           }
           const el = videoRef.current;
           el.playbackRate = playbackSpeed;

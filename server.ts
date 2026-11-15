@@ -4,7 +4,7 @@ import cookieParser from 'cookie-parser';
 import compression from 'compression';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { repairLibraryThumbnails } from './src/server/video-cache.ts';
+import { repairLibraryThumbnails, repairLibraryDurations } from './src/server/video-cache.ts';
 import { connectMongo, mongo } from './src/server/mongo/store.ts';
 import { mongoAuth, mongoAuthRouter } from './src/server/mongo/auth.ts';
 import { mongoRouter } from './src/server/mongo/routes.ts';
@@ -160,6 +160,7 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`>>> MEGA STREAM X Server running on http://0.0.0.0:${PORT}`);
     void repairLibraryThumbnails().catch(() => console.warn('Thumbnail repair could not start'));
+    void repairLibraryDurations().catch(() => console.warn('Duration repair could not start'));
   });
 }
 

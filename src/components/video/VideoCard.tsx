@@ -21,7 +21,7 @@ export function formatDuration(seconds: number): string {
 }
 
 function VideoCardComponent({ video, onPlay, onViewDetails, onToggleFavorite, eager }: VideoCardProps) {
-  const duration = video.watch_duration || video.duration_seconds;
+  const duration = video.duration_seconds || video.watch_duration || 0;
   const percent = duration > 0 ? Math.min(100, Math.max(0, (video.watch_position || 0) / duration * 100)) : 0;
 
   const handleWarmStream = () => {

@@ -240,6 +240,7 @@ export const api = {
   },
 
   async updateWatchProgress(videoId: string, positionSeconds: number, durationSeconds: number): Promise<{ success: boolean; isCompleted: boolean }> {
+    invalidateClientCache('/videos');
     return fetchJson(`${BASE_URL}/progress/${videoId}`, {
       method: 'PUT',
       body: JSON.stringify({ positionSeconds, durationSeconds }),

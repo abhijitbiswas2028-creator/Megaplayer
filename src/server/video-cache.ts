@@ -59,3 +59,28 @@ export async function repairLibraryThumbnails() {
   const videos = await collection('videos').find({}, { projection: { id: 1 } }).toArray();
   for (const video of videos) queueThumbnailRepair(video.id);
 }
+
+export async function repairLibraryDurations() {
+  const videos = await collection('videos').find({}).toArray();
+  const sources = await collection('mega_sources').find({}).toArray();
+  const sourceMap = new Map(sources.map((s) => [s.id, s]));
+
+  for (const v of videos) {
+    if (v.duration_seconds === Math.floor(v.duration_seconds) && v.mega_source_id) {
+      const s = sourceMap.get(v.mega_source_id);
+      if (s?.encrypted_ref && s.file_size > 0) {
+        try {
+          const { probeVideoDuration } = await import('../../scripts/repair_video_durations.ts');
+          const realDuration = await probeVideoDuration(s.encrypted_ref, s.file_size);
+          await collection('videos').updateOne(
+            { id: v.id },
+            { $set: { duration_seconds: realDuration, updated_at: new Date().toISOString() } }
+          );
+          console.log(`[duration] Repaired ${v.id}: ${v.duration_seconds}s -> ${realDuration.toFixed(2)}s`);
+        } catch {
+          // Keep existing duration on network error
+        }
+      }
+    }
+  }
+}

@@ -13,6 +13,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test": "tsx --test tests/unit/*.test.ts",
+    "durations:repair": "tsx scripts/repair_video_durations.ts",
     "thumbnails:repair": "tsx scripts/repair_thumbnails.ts",
     "test:mongo": "tsx --test tests/integration/mongo.test.ts"
   },
