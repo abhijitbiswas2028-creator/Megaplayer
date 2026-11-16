@@ -54,8 +54,13 @@ mongoRouter.get('/videos/:id',wrap(async(req,res)=>{
 }));
 mongoRouter.post('/videos/validate-mega',requireOwner,wrap(async(req,res)=>{
   const url=req.body?.url;
-  if(typeof url!=='string'||!parseMegaUrl(url).isValid){res.status(400).json({valid:false,error:'Invalid MEGA URL'});return;}
-  try{res.json({valid:true,metadata:await megaAdapter.resolveLink(url)});}catch{res.status(400).json({valid:false,error:'Could not resolve the MEGA video.'});}
+  const parsed=parseMegaUrl(url);
+  if(!parsed.isValid){res.status(400).json({valid:false,error:parsed.errorMessage});return;}
+  try {
+    const meta=await megaAdapter.resolveLink(parsed.fileUrl!);
+    if(!meta.isVideo){res.status(400).json({valid:false,error:'This file is not a supported video. Please share a video file.'});return;}
+    res.json({valid:true,metadata:{fileId:meta.id,fileName:meta.name,fileSize:meta.size,mimeType:meta.mimeType,isVideo:meta.isVideo,sanitizedUrl:meta.sanitizedUrl}});
+  } catch {res.status(400).json({valid:false,error:'Could not read this MEGA file. Check that it is still shared and the decryption key is correct, then retry.'});}
 }));
 mongoRouter.post('/videos',requireOwner,wrap(async(req,res)=>{
   const b=req.body||{};
@@ -65,10 +70,12 @@ mongoRouter.post('/videos',requireOwner,wrap(async(req,res)=>{
   let sourceId:string|null=null;
   let embedUrl=b.embedUrl||null;
   if(b.megaUrl){
-    if(typeof b.megaUrl!=='string'||!parseMegaUrl(b.megaUrl).isValid){res.status(400).json({error:'Invalid MEGA URL'});return;}
+    const parsed=parseMegaUrl(b.megaUrl);
+    if(!parsed.isValid){res.status(400).json({error:parsed.errorMessage});return;}
     let meta;
-    try{meta=await megaAdapter.resolveLink(b.megaUrl);}catch{res.status(400).json({error:'Could not resolve the MEGA video.'});return;}
-    const encrypted=encryptSensitiveRef(b.megaUrl.trim());sourceId=randomUUID();
+    try{meta=await megaAdapter.resolveLink(parsed.fileUrl!);}catch{res.status(400).json({error:'Could not resolve the MEGA video.'});return;}
+    if(!meta.isVideo){res.status(400).json({error:'This file is not a supported video.'});return;}
+    const encrypted=encryptSensitiveRef(parsed.fileUrl!);sourceId=randomUUID();
     await collection('mega_sources').insertOne({id:sourceId,encrypted_ref:encrypted.ciphertext,iv:encrypted.iv,auth_tag:encrypted.authTag,file_id:meta.id,file_name:meta.name,file_size:meta.size,mime_type:meta.mimeType,created_at:now});
     embedUrl=embedUrl||parseMegaUrl(b.megaUrl).embedUrl;
   }

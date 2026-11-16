@@ -77,6 +77,26 @@ test('MongoDB pure engine and full API lifecycle', { timeout: 240000 }, async ()
     assert.match(login.headers.get('set-cookie')!, /Secure/);
     const owner = (await login.json()).token;
 
+    const { megaAdapter } = await import('../../src/server/mega-adapter.ts');
+    const resolveLink = megaAdapter.resolveLink;
+    try {
+      megaAdapter.resolveLink = async () => ({ id: 'example', name: 'Movie.mp4', size: 2048, mimeType: 'video/mp4', isVideo: true, sanitizedUrl: 'https://mega.nz/file/example' });
+      const validation = await request('/videos/validate-mega', owner, { url: 'https://mega.nz/file/example#abcdefghi' });
+      assert.equal(validation.status, 200);
+      const result = await validation.json();
+      assert.equal(result.metadata.fileName, 'Movie.mp4');
+      assert.equal(result.metadata.fileSize, 2048);
+      assert.equal(result.metadata.fileId, 'example');
+      const missingKey = await request('/videos/validate-mega', owner, { url: 'https://mega.nz/file/example' });
+      assert.equal(missingKey.status, 400);
+      assert.match((await missingKey.json()).error, /key is missing/);
+      megaAdapter.resolveLink = async () => ({ id: 'example', name: 'Notes.txt', size: 20, mimeType: 'text/plain', isVideo: false, sanitizedUrl: 'https://mega.nz/file/example' });
+      assert.equal((await request('/videos/validate-mega', owner, { url: 'https://mega.nz/file/example#abcdefghi' })).status, 400);
+      assert.equal((await request('/videos', owner, { title: 'Notes', megaUrl: 'https://mega.nz/file/example#abcdefghi' })).status, 400);
+    } finally {
+      megaAdapter.resolveLink = resolveLink;
+    }
+
     const friend = (await (await request('/auth/login', undefined, { email: 'friend@megastreamx.com', password: 'Friend12345!' })).json()).token;
     const videos = (await (await request('/videos?search=%5Bmovie%5D&category=movies', owner)).json()).videos;
     assert.equal(videos.length, 1);

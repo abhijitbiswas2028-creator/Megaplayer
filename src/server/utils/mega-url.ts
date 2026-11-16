@@ -19,7 +19,7 @@ export interface ParsedMegaLink {
  * - https://mega.nz/#!{fileId}!{key} (legacy)
  * - https://mega.io/file/{fileId}#{key}
  */
-export function parseMegaUrl(rawUrl: string): ParsedMegaLink {
+export function parseMegaUrl(rawUrl: string, separateKey = ''): ParsedMegaLink {
   if (!rawUrl || typeof rawUrl !== 'string') {
     return {
       isValid: false,
@@ -35,6 +35,16 @@ export function parseMegaUrl(rawUrl: string): ParsedMegaLink {
   const iframeMatch = trimmed.match(/<iframe[^>]+src=["']([^"']+)["']/i);
   if (iframeMatch) {
     trimmed = iframeMatch[1].trim();
+  }
+
+  // Accept a key shared separately, without overriding a key already in the URL.
+  const suppliedKey = separateKey.trim().replace(/^#/, '');
+  if (suppliedKey && !/^[a-zA-Z0-9_-]+$/.test(suppliedKey)) {
+    return { isValid: false, type: 'invalid', hasKey: false, errorMessage: 'The decryption key contains invalid characters.' };
+  }
+  if (suppliedKey) {
+    if (/\/#![^!]+!?$/.test(trimmed)) trimmed = trimmed.replace(/!$/, '') + '!' + suppliedKey;
+    else if (!trimmed.includes('#') || trimmed.endsWith('#')) trimmed = trimmed.replace(/#$/, '') + '#' + suppliedKey;
   }
 
   // Pattern 1: https://mega.nz/file/<id>#<key> or /embed/<id>#<key> or mega.io
@@ -71,7 +81,7 @@ export function parseMegaUrl(rawUrl: string): ParsedMegaLink {
       key,
       hasKey,
       sanitizedUrl: `https://mega.nz/file/${id}`,
-      fileUrl: hasKey ? `https://mega.nz/#!${id}!${key}` : `https://mega.nz/#!${id}`,
+      fileUrl: hasKey ? `https://mega.nz/file/${id}#${key}` : `https://mega.nz/file/${id}`,
       embedUrl: hasKey ? `https://mega.nz/embed/${id}#${key}` : `https://mega.nz/embed/${id}`,
       errorMessage: hasKey ? undefined : 'Decryption key is missing in legacy MEGA link.',
     };

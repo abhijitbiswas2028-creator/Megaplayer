@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Video, Category, Invitation, AdminStats, AuditLog } from '../../types/index.ts';
 import { api, resolveBackendUrl } from '../../lib/api.ts';
+import { parseMegaUrl } from '../../server/utils/mega-url.ts';
 import { formatDuration } from '../video/VideoCard.tsx';
 import {
   ShieldAlert,
@@ -72,10 +73,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     isFeatured: false,
     status: 'PUBLISHED' as 'PUBLISHED' | 'UNPUBLISHED',
   });
+  const [megaKey, setMegaKey] = useState('');
+  const validationVersion = useRef(0);
+  const validationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const megaInputRef = useRef<HTMLInputElement>(null);
   const [validatingMega, setValidatingMega] = useState(false);
   const [megaValidationResult, setMegaValidationResult] = useState<{
     valid: boolean;
-    metadata?: any;
+    metadata?: Awaited<ReturnType<typeof api.validateMegaLink>>['metadata'];
     error?: string;
   } | null>(null);
   const [submittingVideo, setSubmittingVideo] = useState(false);
@@ -162,53 +167,83 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   }, [activeTab]);
 
   // Validate MEGA link with live API
-  const handleValidateMega = async () => {
-    if (!addForm.megaUrl.trim()) return;
+  const handleValidateMega = useCallback(async () => {
+    if (validationTimer.current) clearTimeout(validationTimer.current);
+    const parsed = parseMegaUrl(addForm.megaUrl, megaKey);
+    if (!parsed.isValid) {
+      setMegaValidationResult({ valid: false, error: parsed.errorMessage });
+      return;
+    }
+    const version = ++validationVersion.current;
     setValidatingMega(true);
     setMegaValidationResult(null);
     setVideoErrorMsg(null);
 
     try {
-      const res = await api.validateMegaLink(addForm.megaUrl.trim());
+      const res = await api.validateMegaLink(parsed.fileUrl!);
+      if (version !== validationVersion.current) return;
       setMegaValidationResult(res);
       if (res.valid && res.metadata) {
         // Auto-fill title from filename if empty
-        if (!addForm.title) {
+        if (res.metadata.fileName) {
           const cleanTitle = res.metadata.fileName.replace(/\.[^/.]+$/, '').replace(/[-_.]/g, ' ');
-          setAddForm((prev) => ({ ...prev, title: cleanTitle }));
+          setAddForm((prev) => ({ ...prev, title: prev.title.trim() ? prev.title : cleanTitle }));
         }
       }
     } catch (err: any) {
+      if (version !== validationVersion.current) return;
       setMegaValidationResult({
         valid: false,
         error: err?.message || 'Link validation failed. Ensure the MEGA URL contains the decryption key.',
       });
     } finally {
-      setValidatingMega(false);
+      if (version === validationVersion.current) setValidatingMega(false);
     }
-  };
+  }, [addForm.megaUrl, megaKey]);
+
+  // Wait for typing to stop before fetching file details. Ignore responses for old links.
+  useEffect(() => {
+    setValidatingMega(false);
+    if (activeTab === 'add-video' && addForm.megaUrl.trim()) {
+      validationTimer.current = setTimeout(() => {
+        void handleValidateMega();
+      }, 700);
+    }
+    return () => {
+      if (validationTimer.current) clearTimeout(validationTimer.current);
+      validationVersion.current += 1;
+    };
+  }, [activeTab, handleValidateMega]);
 
   // Submit Video
   const handleCreateVideo = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submittingVideo || validatingMega) return;
     if (!addForm.title.trim()) {
       setVideoErrorMsg('Please provide a title for the video.');
       return;
     }
-    if (!addForm.megaUrl && !addForm.sampleStreamUrl) {
+    if (!addForm.megaUrl.trim() && !addForm.sampleStreamUrl.trim()) {
       setVideoErrorMsg('Please provide either a MEGA share link or sample stream source.');
       return;
     }
 
+    const parsed = addForm.megaUrl.trim() ? parseMegaUrl(addForm.megaUrl, megaKey) : null;
+    if (parsed && !parsed.isValid) {
+      setVideoErrorMsg(parsed.errorMessage || 'Please check the MEGA link.');
+      return;
+    }
+    if (validationTimer.current) clearTimeout(validationTimer.current);
+    validationVersion.current += 1;
     setSubmittingVideo(true);
     setVideoSuccessMsg(null);
     setVideoErrorMsg(null);
 
     try {
       await api.createVideo({
-        title: addForm.title,
+        title: addForm.title.trim(),
         description: addForm.description,
-        megaUrl: addForm.megaUrl || undefined,
+        megaUrl: parsed?.fileUrl,
         sampleStreamUrl: addForm.sampleStreamUrl || undefined,
         categoryIds: addForm.categoryIds,
         thumbnailUrl: addForm.thumbnailUrl || undefined,
@@ -217,7 +252,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         status: addForm.status,
       });
 
-      setVideoSuccessMsg('Video added successfully to private catalog!');
+      setVideoSuccessMsg(`“${addForm.title.trim()}” added successfully. You can add another video below.`);
+      setMegaKey('');
+      validationVersion.current += 1;
+      requestAnimationFrame(() => megaInputRef.current?.focus());
       setAddForm({
         megaUrl: '',
         sampleStreamUrl: '',
@@ -528,37 +566,49 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </h2>
               <p className="text-xs text-slate-400 mt-1">
                 Enter your authorized MEGA link (e.g.{' '}
-                <code className="text-cyan-300 font-mono">https://mega.nz/file/xyz#key</code>). Direct streaming works immediately without requiring any environment variables or manual encryption keys.
+                <code className="text-cyan-300 font-mono">https://mega.nz/file/xyz#key</code>). Paste a file link or MEGA embed code. We automatically check it and fetch its details, then you can save. Repeat to add more videos. Folder links are not supported.
               </p>
             </div>
 
             {videoSuccessMsg && (
-              <div className="p-4 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center gap-2">
+              <div role="status" className="p-4 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
                 <span>{videoSuccessMsg}</span>
               </div>
             )}
 
             {videoErrorMsg && (
-              <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-2">
+              <div role="alert" className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 <span>{videoErrorMsg}</span>
               </div>
             )}
 
             <form onSubmit={handleCreateVideo} className="space-y-5">
+              <fieldset disabled={submittingVideo} className="space-y-5">
               {/* MEGA Link with Live Validator Button */}
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-300 flex items-center justify-between">
-                  <span>MEGA Share URL</span>
-                  <span className="text-[10px] text-slate-400 font-normal">Requires decryption key fragment (#...)</span>
-                </label>
+                <div className="text-xs font-bold text-slate-300 flex items-center justify-between">
+                  <span><label htmlFor="mega-share-url">MEGA Share URL</label></span>
+                  <span className="text-[10px] text-slate-400 font-normal">Include #key or enter the key below</span>
+                </div>
                 <div className="flex gap-2">
                   <input
-                    type="url"
+                    id="mega-share-url"
+                    ref={megaInputRef}
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
                     placeholder="https://mega.nz/file/ABC123xyz#SecurityKey456"
                     value={addForm.megaUrl}
-                    onChange={(e) => setAddForm({ ...addForm, megaUrl: e.target.value })}
+                    onChange={(e) => {
+                      validationVersion.current += 1;
+                      setValidatingMega(false);
+                      setMegaValidationResult(null);
+                      setVideoErrorMsg(null);
+                      setVideoSuccessMsg(null);
+                      setAddForm({ ...addForm, megaUrl: e.target.value });
+                    }}
                     className="flex-1 bg-[#181c28] text-xs text-white placeholder-slate-500 px-3.5 py-2.5 rounded-xl border border-white/10 focus:outline-none focus:border-violet-500"
                   />
                   <button
@@ -573,7 +623,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </>
                     ) : (
                       <>
-                        <Sparkles className="w-3.5 h-3.5" /> Validate
+                        <Sparkles className="w-3.5 h-3.5" /> Check again
                       </>
                     )}
                   </button>
@@ -581,9 +631,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
 
 
+              <div className="space-y-1.5">
+                <label htmlFor="mega-key" className="text-xs font-bold text-slate-300">Decryption key (only if shared separately)</label>
+                <input id="mega-key" type="password" autoComplete="off" value={megaKey}
+                  onChange={(e) => {
+                    validationVersion.current += 1;
+                    setValidatingMega(false);
+                    setMegaValidationResult(null);
+                    setVideoErrorMsg(null);
+                    setMegaKey(e.target.value);
+                  }}
+                  placeholder="Paste the separate key here"
+                  className="w-full bg-[#181c28] text-xs text-white px-3.5 py-2.5 rounded-xl border border-white/10 focus:outline-none focus:border-violet-500" />
+                <p className="text-[11px] text-slate-400">Validation starts automatically when you stop typing. The title fills in if empty; you can edit it and the details before saving.</p>
+              </div>
+              {validatingMega && (
+                <p role="status" className="text-xs text-violet-300">Checking your MEGA link and fetching video details…</p>
+              )}
               {/* Validation Feedback Box */}
               {megaValidationResult && (
                 <div
+                  role="status"
                   className={`p-4 rounded-2xl border text-xs space-y-2 ${
                     megaValidationResult.valid
                       ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
@@ -749,7 +817,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div className="pt-4 border-t border-white/10 flex justify-end">
                 <button
                   type="submit"
-                  disabled={submittingVideo}
+                  disabled={submittingVideo || validatingMega}
                   className="px-6 py-3 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-bold text-xs transition-all shadow-xl shadow-violet-600/30 flex items-center gap-2 cursor-pointer"
                 >
                   {submittingVideo ? (
@@ -758,11 +826,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </>
                   ) : (
                     <>
-                      <PlusCircle className="w-4 h-4" /> Save & Encrypt Video
+                      <PlusCircle className="w-4 h-4" /> Save Video & Add Another
                     </>
                   )}
                 </button>
               </div>
+              </fieldset>
             </form>
           </div>
         </div>
