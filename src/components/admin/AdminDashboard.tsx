@@ -23,6 +23,9 @@ import {
   Sparkles,
   Loader2,
   RefreshCw,
+  Image as ImageIcon,
+  Check,
+  X,
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -86,6 +89,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [submittingVideo, setSubmittingVideo] = useState(false);
   const [videoSuccessMsg, setVideoSuccessMsg] = useState<string | null>(null);
   const [videoErrorMsg, setVideoErrorMsg] = useState<string | null>(null);
+
+  // Thumbnail Validator & Preview State
+  const [thumbValidationStatus, setThumbValidationStatus] = useState<'idle' | 'checking' | 'valid' | 'invalid'>('idle');
+  const [thumbDimensions, setThumbDimensions] = useState<{ width: number; height: number } | null>(null);
+  const [thumbErrorReason, setThumbErrorReason] = useState<string | null>(null);
+  const thumbValidationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const thumbValidationVersion = useRef(0);
 
   // Invitation Form State
   const [inviteForm, setInviteForm] = useState({
@@ -215,6 +225,73 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
   }, [activeTab, handleValidateMega]);
 
+  // Thumbnail Validator & Checker
+  const validateThumbnailUrl = useCallback((rawUrl: string) => {
+    const trimmed = rawUrl.trim();
+    if (!trimmed) {
+      setThumbValidationStatus('idle');
+      setThumbDimensions(null);
+      setThumbErrorReason(null);
+      return;
+    }
+
+    const version = ++thumbValidationVersion.current;
+    setThumbValidationStatus('checking');
+    setThumbErrorReason(null);
+
+    // Resolve relative backend URLs like /media/thumbnails/...
+    const targetUrl = resolveBackendUrl(trimmed);
+
+    // Try loading the image via browser Image object to verify format, accessibility, and dimensions
+    const img = new Image();
+    let isHandled = false;
+
+    const timeout = setTimeout(() => {
+      if (isHandled || version !== thumbValidationVersion.current) return;
+      isHandled = true;
+      img.src = '';
+      setThumbValidationStatus('invalid');
+      setThumbErrorReason('Image load timed out. Check network or if server blocks hotlinking.');
+    }, 10000);
+
+    img.onload = () => {
+      if (isHandled || version !== thumbValidationVersion.current) return;
+      isHandled = true;
+      clearTimeout(timeout);
+      setThumbValidationStatus('valid');
+      setThumbDimensions({ width: img.naturalWidth, height: img.naturalHeight });
+      setThumbErrorReason(null);
+    };
+
+    img.onerror = () => {
+      if (isHandled || version !== thumbValidationVersion.current) return;
+      isHandled = true;
+      clearTimeout(timeout);
+      setThumbValidationStatus('invalid');
+      setThumbDimensions(null);
+      setThumbErrorReason('Could not load image. Please verify URL is a direct image link or publicly accessible.');
+    };
+
+    img.src = targetUrl;
+  }, []);
+
+  // Debounced auto-validation for thumbnail input
+  useEffect(() => {
+    if (activeTab === 'add-video' && addForm.thumbnailUrl.trim()) {
+      thumbValidationTimer.current = setTimeout(() => {
+        validateThumbnailUrl(addForm.thumbnailUrl);
+      }, 600);
+    } else {
+      setThumbValidationStatus('idle');
+      setThumbDimensions(null);
+      setThumbErrorReason(null);
+    }
+    return () => {
+      if (thumbValidationTimer.current) clearTimeout(thumbValidationTimer.current);
+      thumbValidationVersion.current += 1;
+    };
+  }, [activeTab, addForm.thumbnailUrl, validateThumbnailUrl]);
+
   // Submit Video
   const handleCreateVideo = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -268,6 +345,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         status: 'PUBLISHED',
       });
       setMegaValidationResult(null);
+      setThumbValidationStatus('idle');
+      setThumbDimensions(null);
+      setThumbErrorReason(null);
       loadVideos();
       loadStats();
       if (onVideoCreated) onVideoCreated();
@@ -737,16 +817,124 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 />
               </div>
 
-              {/* Thumbnail URL */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-300">Thumbnail Image URL</label>
-                <input
-                  type="url"
-                  placeholder="https://images.unsplash.com/..."
-                  value={addForm.thumbnailUrl}
-                  onChange={(e) => setAddForm({ ...addForm, thumbnailUrl: e.target.value })}
-                  className="w-full bg-[#181c28] text-xs text-white px-3.5 py-2.5 rounded-xl border border-white/10 focus:outline-none focus:border-violet-500"
-                />
+              {/* Thumbnail URL with Live Checker & Preview */}
+              <div className="space-y-2 p-4 rounded-2xl bg-[#141722] border border-white/5">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="thumbnail-url-input" className="text-xs font-bold text-slate-300 flex items-center gap-2">
+                    <ImageIcon className="w-4 h-4 text-violet-400" />
+                    <span>Thumbnail Image URL</span>
+                  </label>
+                  <span className="text-[10px] text-slate-400">Supports HTTPS, HTTP, base64 data URLs & relative links</span>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    id="thumbnail-url-input"
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="https://images.unsplash.com/... or /media/thumbnails/..."
+                    value={addForm.thumbnailUrl}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setAddForm({ ...addForm, thumbnailUrl: val });
+                      if (!val.trim()) {
+                        setThumbValidationStatus('idle');
+                        setThumbDimensions(null);
+                        setThumbErrorReason(null);
+                      }
+                    }}
+                    className="flex-1 bg-[#181c28] text-xs text-white placeholder-slate-500 px-3.5 py-2.5 rounded-xl border border-white/10 focus:outline-none focus:border-violet-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => validateThumbnailUrl(addForm.thumbnailUrl)}
+                    disabled={thumbValidationStatus === 'checking' || !addForm.thumbnailUrl.trim()}
+                    className="px-3.5 py-2.5 rounded-xl bg-violet-600/30 hover:bg-violet-600/50 disabled:opacity-40 text-violet-200 border border-violet-500/30 font-semibold text-xs transition-all cursor-pointer flex items-center gap-1.5 shrink-0"
+                  >
+                    {thumbValidationStatus === 'checking' ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400" />
+                        <span>Checking...</span>
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 text-violet-400" />
+                        <span>Check Link</span>
+                      </>
+                    )}
+                  </button>
+                  {addForm.thumbnailUrl && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddForm({ ...addForm, thumbnailUrl: '' });
+                        setThumbValidationStatus('idle');
+                        setThumbDimensions(null);
+                        setThumbErrorReason(null);
+                      }}
+                      className="px-2.5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white border border-white/10 text-xs transition-all cursor-pointer"
+                      title="Clear thumbnail"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Status Indicator & Live Preview Box */}
+                {addForm.thumbnailUrl.trim() && (
+                  <div className="pt-2">
+                    {thumbValidationStatus === 'checking' && (
+                      <div className="flex items-center gap-2 text-xs text-violet-300 py-1">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Verifying thumbnail accessibility and image headers...</span>
+                      </div>
+                    )}
+
+                    {thumbValidationStatus === 'valid' && (
+                      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+                        {/* Image Preview */}
+                        <div className="relative w-36 aspect-video rounded-lg overflow-hidden border border-white/10 bg-black/40 shrink-0">
+                          <img
+                            src={resolveBackendUrl(addForm.thumbnailUrl.trim())}
+                            alt="Thumbnail preview"
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-xs">
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Valid Image Link</span>
+                          </div>
+                          {thumbDimensions && (
+                            <p className="text-[11px] text-slate-300">
+                              Dimensions: <span className="font-semibold text-white">{thumbDimensions.width} × {thumbDimensions.height} px</span>
+                              {thumbDimensions.width >= 640 && <span className="ml-1 text-emerald-400 font-medium">(HD ready)</span>}
+                            </p>
+                          )}
+                          <p className="text-[10px] text-slate-400">
+                            Image successfully loaded and ready to be displayed as video poster.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {thumbValidationStatus === 'invalid' && (
+                      <div className="flex items-start gap-3 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs">
+                        <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                        <div className="space-y-0.5">
+                          <p className="font-bold text-rose-300">Invalid Thumbnail Image Link</p>
+                          <p className="text-[11px] text-rose-300/90 leading-relaxed">
+                            {thumbErrorReason || 'The URL provided does not point to a valid or reachable image.'}
+                          </p>
+                          <p className="text-[10px] text-slate-400 pt-0.5">
+                            Tip: Ensure the URL directly ends with an image extension (e.g. .jpg, .png, .webp) or is a valid public image host.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Categories Checklist */}
