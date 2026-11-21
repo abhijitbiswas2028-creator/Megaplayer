@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { collection } from './store.ts';
-import { wrap, audit } from './auth.ts';
+import { wrap, audit, invalidateSessionCache } from './auth.ts';
 import { requireOwner } from '../auth.ts';
 import { generateSecureToken } from '../utils/crypto.ts';
 export const mongoAdminRouter=Router();
@@ -31,7 +31,10 @@ mongoAdminRouter.patch('/users/:id/status',wrap(async(req,res)=>{
  if(req.params.id===req.user!.id||!['ACTIVE','DISABLED'].includes(status)){res.status(400).json({error:'Invalid status or attempt to deactivate your own account.'});return;}
  const r=await collection('users').updateOne({id:req.params.id},{$set:{status,updated_at:new Date().toISOString()}});
  if(!r.matchedCount){res.status(404).json({error:'User not found'});return;}
- if(status==='DISABLED')await collection('sessions').deleteMany({user_id:req.params.id});
+ if(status==='DISABLED'){
+  await collection('sessions').deleteMany({user_id:req.params.id});
+  invalidateSessionCache(); // cached sessions would otherwise stay valid for up to 30s
+ }
  await audit(req,'USER_STATUS_UPDATED','USER',req.params.id,{status});res.json({success:true,status});
 }));
 mongoAdminRouter.get('/invitations',wrap(async(req,res)=>{
@@ -44,7 +47,9 @@ mongoAdminRouter.post('/invitations',wrap(async(req,res)=>{
  await audit(req,'INVITATION_CREATED','INVITATION',id);res.status(201).json({success:true,invitation:{id,token,role,maxUses,expiresAt,status:'PENDING',invitedEmail:b.invitedEmail}});
 }));
 mongoAdminRouter.delete('/invitations/:id',wrap(async(req,res)=>{
- await collection('invitations').updateOne({id:req.params.id},{$set:{status:'REVOKED'}});res.json({success:true});
+ const r=await collection('invitations').updateOne({id:req.params.id},{$set:{status:'REVOKED'}});
+ if(!r.matchedCount){res.status(404).json({error:'Invitation not found'});return;}
+ await audit(req,'INVITATION_REVOKED','INVITATION',req.params.id);res.json({success:true});
 }));
 mongoAdminRouter.get('/audit-logs',wrap(async(req,res)=>{
  const logs=await collection('audit_logs').aggregate([{$sort:{created_at:-1}},{$limit:100},{$lookup:{from:'users',localField:'user_id',foreignField:'id',as:'user'}},{$set:{display_name:{$arrayElemAt:['$user.display_name',0]},email:{$arrayElemAt:['$user.email',0]}}},{$project:{_id:0,user:0}}]).toArray();res.json({logs});

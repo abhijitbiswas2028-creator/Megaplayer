@@ -1,18 +1,20 @@
 import 'dotenv/config';
 import { connectMongo, collection, closeMongo } from '../src/server/mongo/store.ts';
 import { withMegaThumbnailSource } from '../src/server/thumbnail-source.ts';
+import { resolveSourceRef } from '../src/server/utils/crypto.ts';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 
-export async function probeVideoDuration(encryptedRef: string, fileSize: number): Promise<number> {
-  return await withMegaThumbnailSource(encryptedRef, fileSize, async (sourceUrl) => {
+/** Probes the real duration. `sourceUrl` must be a playable (decrypted) MEGA URL. */
+export async function probeVideoDuration(sourceUrl: string, fileSize: number): Promise<number> {
+  return await withMegaThumbnailSource(sourceUrl, fileSize, async (localUrl) => {
     const { stdout } = await run('ffprobe', [
       '-v', 'error',
       '-show_entries', 'format=duration',
       '-of', 'json',
-      sourceUrl,
+      localUrl,
     ], { timeout: 45000 });
     const parsed = JSON.parse(stdout);
     const duration = parseFloat(parsed.format?.duration);
@@ -63,12 +65,12 @@ async function main() {
     let probed = false;
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const realDuration = await probeVideoDuration(s.encrypted_ref, s.file_size);
+        const realDuration = await probeVideoDuration(resolveSourceRef(s), s.file_size);
         const now = new Date().toISOString();
 
         await collection('videos').updateOne(
           { id: v.id },
-          { $set: { duration_seconds: realDuration, updated_at: now } }
+          { $set: { duration_seconds: realDuration, duration_verified: true, updated_at: now } }
         );
 
         // Also update any watch progress records for this video

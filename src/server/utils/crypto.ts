@@ -45,6 +45,16 @@ export function decryptSensitiveRef(encrypted: EncryptedData): string {
 }
 
 /**
+ * Returns the playable MEGA URL for a mega_sources row, whether it is encrypted
+ * (AES-256-GCM) or a legacy plaintext/direct row.
+ */
+export function resolveSourceRef(source: { encrypted_ref?: string; iv?: string; auth_tag?: string }): string {
+  const ref = source.encrypted_ref || '';
+  if (source.iv === 'direct' || /^https?:\/\//.test(ref)) return ref;
+  return decryptSensitiveRef({ ciphertext: ref, iv: source.iv || '', authTag: source.auth_tag || '' });
+}
+
+/**
  * Secure password hashing using Node scrypt
  */
 export function hashPassword(password: string): { hash: string; salt: string } {

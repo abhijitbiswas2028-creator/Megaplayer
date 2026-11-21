@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { collection, streamVideo, saveThumbnail } from './mongo/store.ts';
 import { extractThumbnail, inspectThumbnail } from './thumbnail.ts';
 import { withMegaThumbnailSource } from './thumbnail-source.ts';
-import { decryptSensitiveRef } from './utils/crypto.ts';
+import { resolveSourceRef } from './utils/crypto.ts';
 import { megaAdapter } from './mega-adapter.ts';
 import { recoverMegaPreview } from './mega-preview.ts';
 
@@ -100,8 +100,7 @@ export async function repairVideoThumbnail(videoId: string, force = false) {
     }
   }
   if (video.encrypted_ref) {
-    const source = video.iv === 'direct' || /^https?:/.test(video.encrypted_ref) ? video.encrypted_ref
-      : decryptSensitiveRef({ ciphertext: video.encrypted_ref, iv: video.iv, authTag: video.auth_tag });
+    const source = resolveSourceRef(video);
     const size = video.file_size || (await megaAdapter.resolveLink(source)).size;
     if (!(size > 0)) throw new Error('Video size is unavailable');
     await withMegaThumbnailSource(source, size, stream => refreshVideoMetadata(videoId, stream, source));
@@ -133,26 +132,31 @@ export async function repairLibraryThumbnails() {
 }
 
 export async function repairLibraryDurations() {
-  const videos = await collection('videos').find({}).toArray();
-  const sources = await collection('mega_sources').find({}).toArray();
+  // Only probe videos whose duration was never verified; previously every integer duration was
+  // re-probed (downloading from MEGA) on every server start, and encrypted refs were passed undecrypted.
+  const videos = await collection('videos').find({ mega_source_id: { $ne: null }, duration_verified: { $ne: true } }).toArray();
+  if (!videos.length) return;
+  const sources = await collection('mega_sources').find({ id: { $in: videos.map((v) => v.mega_source_id) } }).toArray();
   const sourceMap = new Map(sources.map((s) => [s.id, s]));
+  const { probeVideoDuration } = await import('../../scripts/repair_video_durations.ts');
 
   for (const v of videos) {
-    if (v.duration_seconds === Math.floor(v.duration_seconds) && v.mega_source_id) {
-      const s = sourceMap.get(v.mega_source_id);
-      if (s?.encrypted_ref && s.file_size > 0) {
-        try {
-          const { probeVideoDuration } = await import('../../scripts/repair_video_durations.ts');
-          const realDuration = await probeVideoDuration(s.encrypted_ref, s.file_size);
-          await collection('videos').updateOne(
-            { id: v.id },
-            { $set: { duration_seconds: realDuration, updated_at: new Date().toISOString() } }
-          );
-          console.log(`[duration] Repaired ${v.id}: ${v.duration_seconds}s -> ${realDuration.toFixed(2)}s`);
-        } catch {
-          // Keep existing duration on network error
-        }
-      }
+    const s = sourceMap.get(v.mega_source_id);
+    if (!s?.encrypted_ref || !(s.file_size > 0)) continue;
+    if (v.duration_seconds > 0 && v.duration_seconds !== Math.floor(v.duration_seconds)) {
+      // Fractional durations already come from a real probe or the browser player.
+      await collection('videos').updateOne({ id: v.id }, { $set: { duration_verified: true } });
+      continue;
+    }
+    try {
+      const realDuration = await probeVideoDuration(resolveSourceRef(s), s.file_size);
+      await collection('videos').updateOne(
+        { id: v.id },
+        { $set: { duration_seconds: realDuration, duration_verified: true, updated_at: new Date().toISOString() } }
+      );
+      console.log(`[duration] Repaired ${v.id}: ${v.duration_seconds}s -> ${realDuration.toFixed(2)}s`);
+    } catch {
+      // Keep existing duration on network error; retried on next start
     }
   }
 }

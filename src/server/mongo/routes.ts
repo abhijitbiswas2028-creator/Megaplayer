@@ -68,7 +68,8 @@ mongoRouter.post('/videos',requireOwner,wrap(async(req,res)=>{
   const cats=await categoryIds(b.categoryIds||[]);
   const now=new Date().toISOString();
   let sourceId:string|null=null;
-  let embedUrl=b.embedUrl||null;
+  // embed_url is rendered as an iframe src; only allow https URLs (blocks javascript:/data: XSS).
+  let embedUrl=typeof b.embedUrl==='string'&&/^https:\/\/[^\s]+$/i.test(b.embedUrl.trim())?b.embedUrl.trim():null;
   if(b.megaUrl){
     const parsed=parseMegaUrl(b.megaUrl);
     if(!parsed.isValid){res.status(400).json({error:parsed.errorMessage});return;}
@@ -81,7 +82,11 @@ mongoRouter.post('/videos',requireOwner,wrap(async(req,res)=>{
   }
   const id='vid_'+randomUUID();
   const slug=b.title.toLowerCase().replace(/[^a-z0-9]+/g,'-')+'-'+id;
-  try{await collection('videos').insertOne({id,title:b.title.trim(),description:typeof b.description==='string'?b.description:'',slug,duration_seconds:Math.max(0,Number(b.durationSeconds)||0),thumbnail_url:typeof b.thumbnailUrl==='string'?b.thumbnailUrl:'',embed_url:embedUrl,mega_source_id:sourceId,local_sample_path:b.sampleStreamUrl||null,status:b.status==='UNPUBLISHED'?'UNPUBLISHED':'PUBLISHED',view_count:0,is_featured:b.isFeatured?1:0,category_ids:cats,created_at:now,updated_at:now});}
+  // Sample streams must be public http(s) URLs; arbitrary server file paths must never be streamable.
+  const sample=typeof b.sampleStreamUrl==='string'&&b.sampleStreamUrl.trim()?b.sampleStreamUrl.trim():null;
+  if(sample&&!/^https?:\/\/[^\s]+$/i.test(sample)){if(sourceId)await collection('mega_sources').deleteOne({id:sourceId});res.status(400).json({error:'Sample stream must be an http(s) URL.'});return;}
+  if(!sourceId&&!sample){res.status(400).json({error:'A MEGA link or sample stream URL is required.'});return;}
+  try{await collection('videos').insertOne({id,title:b.title.trim(),description:typeof b.description==='string'?b.description:'',slug,duration_seconds:Math.max(0,Number(b.durationSeconds)||0),thumbnail_url:typeof b.thumbnailUrl==='string'?b.thumbnailUrl:'',embed_url:embedUrl,mega_source_id:sourceId,local_sample_path:sample,status:b.status==='UNPUBLISHED'?'UNPUBLISHED':'PUBLISHED',view_count:0,is_featured:b.isFeatured?1:0,category_ids:cats,created_at:now,updated_at:now});}
   catch(e){if(sourceId)await collection('mega_sources').deleteOne({id:sourceId});throw e;}
   await audit(req,'VIDEO_CREATED','VIDEO',id);
   queueThumbnailRepair(id);
@@ -97,7 +102,6 @@ mongoRouter.patch('/videos/:id',requireOwner,wrap(async(req,res)=>{
   if(b.status!==undefined)update.status=b.status==='UNPUBLISHED'?'UNPUBLISHED':'PUBLISHED';
   if(b.categoryIds!==undefined)update.category_ids=await categoryIds(b.categoryIds);
   await collection('videos').updateOne({id:v.id},{$set:update});
-  invalidateStreamVideoCache(v.id);
   res.json({success:true});
 }));
 mongoRouter.delete('/videos/:id',requireOwner,wrap(async(req,res)=>{
@@ -105,7 +109,7 @@ mongoRouter.delete('/videos/:id',requireOwner,wrap(async(req,res)=>{
   await collection('videos').deleteOne({id:v.id});
   await Promise.all(['favorites','watch_progress','playlist_items'].map(n=>collection(n).deleteMany({video_id:v.id})));
   if(v.mega_source_id)await collection('mega_sources').deleteOne({id:v.mega_source_id});
-  invalidateStreamVideoCache(v.id);
+  invalidateStreamVideoCache(v.mega_source_id);
   await audit(req,'VIDEO_DELETED','VIDEO',v.id);res.json({success:true});
 }));
 for(const [route,name,key] of [['history','watch_progress','history'],['continue-watching','watch_progress','continueWatching'],['favorites','favorites','favorites']]){
@@ -121,11 +125,14 @@ for(const [route,name,key] of [['history','watch_progress','history'],['continue
 const progress=wrap(async(req,res)=>{
   const v=await findVideo(req,req.params.videoId);if(!v){res.status(404).json({error:'Video not found'});return;}
   const p=Number(req.body?.positionSeconds),d=Number(req.body?.durationSeconds);
-  if(!Number.isFinite(p)||p<0||!Number.isFinite(d)||d<=0){res.status(400).json({error:'Progress requires a finite position and positive duration.'});return;}
+  if(!Number.isFinite(p)||p<0||!Number.isFinite(d)||d<=0||d>86400){res.status(400).json({error:'Progress requires a finite position and positive duration.'});return;}
   const pos=Math.min(p,d), completed=pos/d>=.92?1:0;
   const now=new Date().toISOString();
+  // Sync the player-reported duration only when it actually differs; writing the video on every
+  // 5s progress tick caused needless writes and churned updated_at (thumbnail cache-busting).
+  const durationChanged=Math.abs((Number(v.duration_seconds)||0)-d)>0.5;
   await Promise.all([
-    collection('videos').updateOne({id:v.id},{$set:{duration_seconds:d,updated_at:now}}),
+    durationChanged?collection('videos').updateOne({id:v.id},{$set:{duration_seconds:d}}):null,
     collection('watch_progress').updateOne({user_id:req.user!.id,video_id:v.id},{$set:{position_seconds:pos,duration_seconds:d,completed,updated_at:now},$setOnInsert:{id:randomUUID()}},{upsert:true})
   ]);
   res.json({success:true,positionSeconds:pos,isCompleted:Boolean(completed)});

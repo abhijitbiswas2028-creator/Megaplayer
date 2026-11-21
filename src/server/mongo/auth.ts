@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction, type RequestHan
 import { randomUUID } from 'node:crypto';
 import { collection } from './store.ts';
 import { generateSecureToken, hashPassword, verifyPassword } from '../utils/crypto.ts';
+import { rateLimit } from '../security.ts';
 
 export const wrap = (fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>): RequestHandler => (req,res,next) => { Promise.resolve(fn(req,res,next)).catch(next); };
 export const publicUser = (u: any) => ({ id:u.id, email:u.email, displayName:u.display_name, role:u.role, status:u.status });
@@ -62,8 +63,10 @@ export async function audit(req: Request, action: string, type: string, id: stri
   await collection('audit_logs').insertOne({id:randomUUID(),user_id:req.user?.id,action,target_type:type,target_id:id,ip_address:req.ip,details_json:JSON.stringify(details),created_at:new Date().toISOString()});
 }
 export const mongoAuthRouter = Router();
+// Brute-force protection: 10 login / invite attempts per IP per 15 minutes.
+const authLimiter = rateLimit({ windowMs: 15 * 60_000, max: 10, message: 'Too many attempts. Please wait a few minutes and try again.' });
 mongoAuthRouter.get('/me',(req,res)=>res.json({user:req.user||null,token:req.sessionToken}));
-mongoAuthRouter.post('/login',wrap(async(req,res)=>{
+mongoAuthRouter.post('/login',authLimiter,wrap(async(req,res)=>{
   const {email,password}=req.body||{};
   if(typeof email!=='string'||typeof password!=='string') {res.status(400).json({error:'Email and password are required.'});return;}
   const user=await collection('users').findOne({email:email.trim()},{collation:{locale:'en',strength:2}});
@@ -88,7 +91,7 @@ mongoAuthRouter.post('/quick-demo-login',wrap(async(req,res)=>{
   if(!user){res.status(404).json({error:'No active user found.'});return;}
   res.json({user:publicUser(user),token:await session(user.id,req,res)});
 }));
-mongoAuthRouter.post('/accept-invite',wrap(async(req,res)=>{
+mongoAuthRouter.post('/accept-invite',authLimiter,wrap(async(req,res)=>{
   const {token,email,password,displayName}=req.body||{};
   if([token,email,password,displayName].some(v=>typeof v!=='string'||!v.trim())||password.length<8){res.status(400).json({error:'Valid invitation, email, name and password (8+ characters) are required.'});return;}
   const invite=await collection('invitations').findOneAndUpdate({token:token.trim(),status:'PENDING',expires_at:{$gt:new Date().toISOString()},$expr:{$lt:['$uses_count','$max_uses']}},{$inc:{uses_count:1}},{returnDocument:'after'});

@@ -10,6 +10,8 @@ import { mongoAuth, mongoAuthRouter } from './src/server/mongo/auth.ts';
 import { mongoRouter } from './src/server/mongo/routes.ts';
 import { mongoAdminRouter } from './src/server/mongo/admin.ts';
 import { thumbnailRouter } from './src/server/mongo/thumbnails.ts';
+import { corsMiddleware, securityHeaders } from './src/server/security.ts';
+import { warnIfInsecureConfiguration, scheduleSessionCleanup } from './src/server/startup-checks.ts';
 
 // Process guards for graceful streaming lifecycle
 process.on('unhandledRejection', (reason) => {
@@ -48,22 +50,12 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(cookieParser());
 
-// CORS support for Vercel and cross-origin frontend clients
-app.use((req: Request, res: Response, next) => {
-  const origin = req.headers.origin;
-  if (origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range, X-Requested-With');
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
-  }
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(204);
-    return;
-  }
-  next();
-});
+// Trust proxy for secure cookies and correct client IPs behind reverse proxies (Railway, Nginx)
+app.set('trust proxy', 1);
+
+// Baseline security headers + CORS allowlist (set CORS_ORIGINS for a separately hosted frontend)
+app.use(securityHeaders);
+app.use(corsMiddleware);
 
 // Serve thumbnails with strict no-cache headers so client browsers always receive updated thumbnails
 app.use('/thumbnails', (req: Request, res: Response, next) => {
@@ -81,9 +73,6 @@ app.use(express.static(path.resolve(__dirname, 'public'), {
   maxAge: '1h',
   etag: true,
 }));
-
-// Trust proxy for secure cookies behind reverse proxies/Cloud Run
-app.set('trust proxy', 1);
 
 // Static content-addressed thumbnails served directly from MongoDB binary storage
 app.use('/media/thumbnails', thumbnailRouter);
@@ -136,6 +125,8 @@ app.use((error: any, _req: Request, res: Response, next: express.NextFunction) =
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
   await connectMongo();
+  await warnIfInsecureConfiguration().catch(() => {});
+  scheduleSessionCleanup();
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
@@ -165,6 +156,8 @@ async function startServer() {
 }
 
 startServer().catch((err) => {
-  console.error('Fatal server startup failure:', err instanceof Error ? err.name : 'Unknown error');
+  // Log the message (never the stack's connection string) so startup failures are diagnosable.
+  const message = err instanceof Error ? `${err.name}: ${err.message}` : 'Unknown error';
+  console.error('Fatal server startup failure:', message.replace(/mongodb(\+srv)?:\/\/[^\s]+/gi, 'mongodb://<redacted>'));
   process.exit(1);
 });
